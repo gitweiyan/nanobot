@@ -1278,6 +1278,74 @@ nanobot gateway --config ~/.nanobot-telegram/config.json --workspace /tmp/nanobo
 - `--workspace` overrides the workspace defined in the config file
 - Cron jobs and runtime media/state are derived from the config directory
 
+## 🔌 Hot-Pluggable Workspaces
+
+Starting from v0.1.5, nanobot supports hot-pluggable workspaces, allowing you to switch between different workspaces at runtime without restarting the agent. Each workspace maintains its own:
+- 📁 Custom skills
+- 🧠 Memory and conversation history
+- 💬 Session data
+- ⚙️ Identity and configuration files
+
+### Workspace Management CLI
+
+Use the `nanobot workspace` command group to manage workspaces:
+
+#### List all workspaces
+```bash
+nanobot workspace list
+```
+
+Output:
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┓
+┃ Path                                              ┃ Name     ┃ Current ┃ Exists ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━┩
+│ /home/user/.nanobot/workspace                     │ default  │ ✓       │ ✓      │
+│ /home/user/projects/my-project/workspace          │ my-proj  │ ✗       │ ✓      │
+└───────────────────────────────────────────────────┴──────────┴─────────┴────────┘
+```
+
+#### Show workspace details
+```bash
+# Show current workspace
+nanobot workspace info
+
+# Show specific workspace
+nanobot workspace info /path/to/workspace
+```
+
+#### Create a new workspace
+```bash
+nanobot workspace create ~/projects/my-new-project/workspace --name "My New Project"
+```
+
+#### Set default workspace
+```bash
+nanobot workspace switch ~/projects/my-project/workspace --name "My Project"
+```
+The change will take effect on next restart.
+
+### Runtime Workspace Switching
+
+You can switch workspaces at runtime using the agent's built-in tools:
+
+```
+# Switch to a new workspace
+switch_workspace(path="/path/to/new/workspace", name="project-x")
+
+# List available workspaces
+list_workspaces()
+
+# Get current workspace info
+get_workspace_info()
+```
+
+When you switch workspaces at runtime:
+- All components are automatically reinitialized with the new workspace path
+- Existing sessions are preserved in the old workspace
+- New conversations will use the new workspace's memory, skills, and sessions
+- No restart required!
+
 ## 💻 CLI Reference
 
 | Command | Description |
@@ -1295,6 +1363,10 @@ nanobot gateway --config ~/.nanobot-telegram/config.json --workspace /tmp/nanobo
 | `nanobot provider login openai-codex` | OAuth login for providers |
 | `nanobot channels login` | Link WhatsApp (scan QR) |
 | `nanobot channels status` | Show channel status |
+| `nanobot workspace list` | List all available workspaces |
+| `nanobot workspace info [path]` | Show workspace details |
+| `nanobot workspace create <path> [--name <name>]` | Create a new workspace |
+| `nanobot workspace switch <path> [--name <name>]` | Set default workspace |
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 

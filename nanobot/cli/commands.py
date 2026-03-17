@@ -839,6 +839,138 @@ def agent(
 channels_app = typer.Typer(help="Manage channels")
 app.add_typer(channels_app, name="channels")
 
+# ============================================================================
+# Workspace Commands
+# ============================================================================
+
+workspace_app = typer.Typer(help="Manage workspaces")
+app.add_typer(workspace_app, name="workspace")
+
+
+@workspace_app.command("list")
+def workspace_list():
+    """List all available workspaces."""
+    from nanobot.config.loader import load_config
+    from nanobot.workspace.manager import WorkspaceManager
+
+    config = load_config()
+    workspace_manager = WorkspaceManager(config)
+    workspaces = workspace_manager.list_workspaces()
+
+    table = Table(title="Available Workspaces")
+    table.add_column("Path", style="cyan")
+    table.add_column("Name", style="magenta")
+    table.add_column("Current", style="green")
+    table.add_column("Exists", style="blue")
+
+    for ws in workspaces:
+        table.add_row(
+            ws["path"],
+            ws["name"],
+            "[green]✓[/green]" if ws["is_current"] else "[dim]✗[/dim]",
+            "[green]✓[/green]" if ws["exists"] else "[dim]✗[/dim]"
+        )
+
+    console.print(table)
+
+
+@workspace_app.command("info")
+def workspace_info(
+    path: str | None = typer.Argument(None, help="Path to workspace (defaults to current)")
+):
+    """Show detailed information about a workspace."""
+    from nanobot.config.loader import load_config
+    from nanobot.workspace.manager import WorkspaceManager
+
+    config = load_config()
+    workspace_manager = WorkspaceManager(config)
+    info = workspace_manager.get_workspace_info(path)
+
+    console.print(f"[bold cyan]Workspace Information[/bold cyan]")
+    console.print(f"Path: {info['path']}")
+    console.print(f"Is Current: {'[green]Yes[/green]' if info['is_current'] else '[dim]No[/dim]'}")
+    console.print(f"Exists: {'[green]Yes[/green]' if info['exists'] else '[dim]No[/dim]'}")
+
+    if info["exists"]:
+        structure = info["structure"]
+        stats = info["stats"]
+
+        console.print("\n[bold magenta]Structure[/bold magenta]")
+        console.print(f"  Skills Directory: {'[green]✓[/green]' if structure['skills'] else '[dim]✗[/dim]'}")
+        console.print(f"  Memory Directory: {'[green]✓[/green]' if structure['memory'] else '[dim]✗[/dim]'}")
+        console.print(f"  Sessions Directory: {'[green]✓[/green]' if structure['sessions'] else '[dim]✗[/dim]'}")
+
+        console.print("\n[bold blue]Statistics[/bold blue]")
+        console.print(f"  Number of Skills: {stats['skills_count']}")
+        console.print(f"  Memory Files: {stats['memory_files']}")
+        console.print(f"  Sessions: {stats['sessions_count']}")
+
+
+@workspace_app.command("create")
+def workspace_create(
+    path: str = typer.Argument(..., help="Path to new workspace"),
+    name: str | None = typer.Option(None, "--name", "-n", help="Name for the workspace")
+):
+    """Create a new workspace."""
+    from nanobot.config.loader import load_config
+    from nanobot.workspace.manager import WorkspaceManager
+
+    config = load_config()
+    workspace_manager = WorkspaceManager(config)
+
+    try:
+        workspace_path = workspace_manager._resolve_path(path)
+        if workspace_path.exists():
+            console.print(f"[yellow]Workspace already exists at: {workspace_path}[/yellow]")
+            if not typer.confirm("Do you want to initialize it anyway?"):
+                raise typer.Exit()
+
+        workspace_manager._initialize_workspace(workspace_path)
+        if name:
+            workspace_manager.add_workspace_metadata(path, {"name": name})
+
+        console.print(f"[green]✓[/green] Workspace created successfully at: {workspace_path}")
+        console.print(f"[dim]Use 'nanobot workspace switch {path}' to start using it[/dim]")
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to create workspace: {e}")
+        raise typer.Exit(1)
+
+
+@workspace_app.command("switch")
+def workspace_switch(
+    path: str = typer.Argument(..., help="Path to workspace to switch to"),
+    name: str | None = typer.Option(None, "--name", "-n", help="Optional name for the workspace")
+):
+    """Set the default workspace in the configuration."""
+    from nanobot.config.loader import load_config, save_config
+
+    config = load_config()
+    old_path = config.agents.defaults.workspace
+
+    # Resolve and validate the new path
+    from nanobot.workspace.manager import WorkspaceManager
+    workspace_manager = WorkspaceManager(config)
+    new_workspace = workspace_manager._resolve_path(path)
+
+    if not new_workspace.exists():
+        console.print(f"[yellow]Workspace does not exist at: {new_workspace}[/yellow]")
+        if typer.confirm("Do you want to create it now?"):
+            workspace_manager._initialize_workspace(new_workspace)
+        else:
+            raise typer.Exit()
+
+    # Update the config
+    config.agents.defaults.workspace = str(new_workspace)
+    save_config(config)
+
+    if name:
+        workspace_manager.add_workspace_metadata(path, {"name": name})
+
+    console.print(f"[green]✓[/green] Default workspace changed from:")
+    console.print(f"  Old: {old_path}")
+    console.print(f"  New: {new_workspace}")
+    console.print(f"[dim]The change will take effect on next restart[/dim]")
+
 
 @channels_app.command("status")
 def channels_status():
