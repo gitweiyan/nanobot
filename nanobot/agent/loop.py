@@ -175,6 +175,30 @@ class AgentLoop:
 
         logger.success(f"Components reinitialized for workspace: {new_workspace}")
 
+    def _on_instance_switch(self, old_instance: Path | None, new_instance: Path) -> None:
+        """
+        Callback method called when instance is switched.
+
+        Reinitializes all components for the new instance.
+
+        Args:
+            old_instance: Previous instance path (None if first initialization)
+            new_instance: New instance path
+        """
+        logger.info(f"Reinitializing components for instance: {new_instance}")
+
+        # Update config reference
+        from nanobot.instance.manager import InstanceManager
+        instance_manager = InstanceManager.get()
+        self.config = instance_manager.current_config
+
+        # Get new workspace path from the new config
+        new_workspace = self.config.workspace_path
+        self.workspace = new_workspace
+        self.workspace_manager.switch_workspace(new_workspace)
+
+        logger.success(f"Components reinitialized for instance: {new_instance}")
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         allowed_dir = self.workspace if self.restrict_to_workspace else None
@@ -204,6 +228,23 @@ class AgentLoop:
         self.tools.register(SwitchWorkspaceTool(self.workspace_manager))
         self.tools.register(ListWorkspacesTool(self.workspace_manager))
         self.tools.register(GetWorkspaceInfoTool(self.workspace_manager))
+
+        # Register instance management tools
+        from nanobot.agent.tools.instance import (
+            SwitchInstanceTool,
+            ListInstancesTool,
+            GetInstanceInfoTool,
+            CreateInstanceTool
+        )
+        from nanobot.instance.manager import InstanceManager
+        instance_manager = InstanceManager.get()
+        self.tools.register(SwitchInstanceTool(instance_manager))
+        self.tools.register(ListInstancesTool(instance_manager))
+        self.tools.register(GetInstanceInfoTool(instance_manager))
+        self.tools.register(CreateInstanceTool(instance_manager))
+
+        # Register instance switch callback
+        instance_manager.register_switch_callback(self._on_instance_switch)
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""

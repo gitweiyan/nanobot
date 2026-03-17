@@ -843,6 +843,9 @@ app.add_typer(channels_app, name="channels")
 # Workspace Commands
 # ============================================================================
 
+instance_app = typer.Typer(help="Manage nanobot instances")
+app.add_typer(instance_app, name="instance")
+
 workspace_app = typer.Typer(help="Manage workspaces")
 app.add_typer(workspace_app, name="workspace")
 
@@ -970,6 +973,129 @@ def workspace_switch(
     console.print(f"  Old: {old_path}")
     console.print(f"  New: {new_workspace}")
     console.print(f"[dim]The change will take effect on next restart[/dim]")
+
+
+# ============================================================================
+# Instance Commands
+# ============================================================================
+
+@instance_app.command("list")
+def instance_list():
+    """List all available nanobot instances."""
+    from nanobot.instance.manager import InstanceManager
+
+    instance_manager = InstanceManager.get()
+    instances = instance_manager.list_instances()
+
+    table = Table(title="Available Instances")
+    table.add_column("Path", style="cyan")
+    table.add_column("Name", style="magenta")
+    table.add_column("Current", style="green")
+    table.add_column("Exists", style="blue")
+    table.add_column("Config", style="yellow")
+
+    for instance in instances:
+        config_exists = (Path(instance["path"]) / "config.json").exists()
+        table.add_row(
+            instance["path"],
+            instance["name"],
+            "[green]✓[/green]" if instance["is_current"] else "[dim]✗[/dim]",
+            "[green]✓[/green]" if instance["exists"] else "[dim]✗[/dim]",
+            "[green]✓[/green]" if config_exists else "[dim]✗[/dim]"
+        )
+
+    console.print(table)
+
+
+@instance_app.command("info")
+def instance_info(
+    path: str | None = typer.Argument(None, help="Path to instance (defaults to current)")
+):
+    """Show detailed information about an instance."""
+    from nanobot.instance.manager import InstanceManager
+
+    instance_manager = InstanceManager.get()
+    info = instance_manager.get_instance_info(path)
+
+    console.print(f"[bold cyan]Instance Information[/bold cyan]")
+    console.print(f"Path: {info['path']}")
+    console.print(f"Is Current: {'[green]Yes[/green]' if info['is_current'] else '[dim]No[/dim]'}")
+    console.print(f"Exists: {'[green]Yes[/green]' if info['exists'] else '[dim]No[/dim]'}")
+    console.print(f"Config Exists: {'[green]Yes[/green]' if info['config_exists'] else '[dim]No[/dim]'}")
+
+    if info["exists"]:
+        structure = info["structure"]
+        stats = info["stats"]
+
+        console.print("\n[bold magenta]Structure[/bold magenta]")
+        console.print(f"  Workspace: {'[green]✓[/green]' if structure['workspace'] else '[dim]✗[/dim]'}")
+        console.print(f"  Cron Directory: {'[green]✓[/green]' if structure['cron'] else '[dim]✗[/dim]'}")
+        console.print(f"  History Directory: {'[green]✓[/green]' if structure['history'] else '[dim]✗[/dim]'}")
+        console.print(f"  Logs Directory: {'[green]✓[/green]' if structure['logs'] else '[dim]✗[/dim]'}")
+        console.print(f"  Media Directory: {'[green]✓[/green]' if structure['media'] else '[dim]✗[/dim]'}")
+
+        console.print("\n[bold blue]Statistics[/bold blue]")
+        console.print(f"  Workspace Skills: {stats['workspace_skills']}")
+        console.print(f"  Cron Jobs: {stats['cron_jobs']}")
+        console.print(f"  Log Files: {stats['log_files']}")
+        console.print(f"  Media Files: {stats['media_files']}")
+
+
+@instance_app.command("create")
+def instance_create(
+    path: str = typer.Argument(..., help="Path to new instance root directory"),
+    name: str | None = typer.Option(None, "--name", "-n", help="Name for the instance")
+):
+    """Create a new nanobot instance with full directory structure and default config."""
+    from nanobot.instance.manager import InstanceManager
+
+    instance_manager = InstanceManager.get()
+
+    try:
+        instance_path = instance_manager.create_instance(path, name=name)
+        if instance_path:
+            console.print(f"[green]✓[/green] Instance created successfully at: {instance_path}")
+            console.print(f"[dim]Use 'nanobot --instance {path}' to run with this instance[/dim]")
+        else:
+            console.print(f"[red]✗[/red] Failed to create instance")
+            raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to create instance: {e}")
+        raise typer.Exit(1)
+
+
+@instance_app.command("switch")
+def instance_switch(
+    path: str = typer.Argument(..., help="Path to instance to set as default"),
+    name: str | None = typer.Option(None, "--name", "-n", help="Optional name for the instance")
+):
+    """Set the default instance (creates symlink at ~/.nanobot pointing to the selected instance."""
+    import os
+    default_path = Path.home() / ".nanobot"
+    target_path = Path(path).expanduser().resolve()
+
+    if not target_path.exists():
+        console.print(f"[yellow]Instance does not exist at: {target_path}[/yellow]")
+        raise typer.Exit(1)
+
+    # Check if default is already a symlink
+    if default_path.is_symlink():
+        console.print(f"[yellow]Default instance already exists at {default_path}[/yellow]")
+        if typer.confirm("Do you want to replace it?"):
+            default_path.unlink()
+        else:
+            raise typer.Exit()
+    elif default_path.exists():
+        console.print(f"[yellow]{default_path} already exists and is not a symlink[/yellow]")
+        if typer.confirm("Do you want to rename it to .nanobot.old and replace?"):
+            default_path.rename(Path.home() / ".nanobot.old")
+        else:
+            raise typer.Exit()
+
+    # Create symlink
+    os.symlink(target_path, default_path)
+    console.print(f"[green]✓[/green] Default instance set to: {target_path}")
+    console.print(f"[dim]All future nanobot commands will use this instance by default[/dim]")
 
 
 @channels_app.command("status")

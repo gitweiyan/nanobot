@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nanobot.config.loader import get_config_path
+from nanobot.instance.manager import InstanceManager
 from nanobot.utils.helpers import ensure_dir
 
 
 def get_data_dir() -> Path:
     """Return the instance-level runtime data directory."""
-    return ensure_dir(get_config_path().parent)
+    return InstanceManager.get().current_instance
 
 
 def get_runtime_subdir(name: str) -> Path:
     """Return a named runtime subdirectory under the instance data dir."""
-    return ensure_dir(get_data_dir() / name)
+    return ensure_dir(InstanceManager.get().get_path(name))
 
 
 def get_media_dir(channel: str | None = None) -> Path:
@@ -36,18 +36,22 @@ def get_logs_dir() -> Path:
 
 def get_workspace_path(workspace: str | None = None) -> Path:
     """Resolve and ensure the agent workspace path."""
-    path = Path(workspace).expanduser() if workspace else Path.home() / ".nanobot" / "workspace"
+    if workspace:
+        path = Path(workspace).expanduser()
+    else:
+        # Use workspace from current instance config
+        path = InstanceManager.get().current_config.workspace_path
     return ensure_dir(path)
 
 
 def get_cli_history_path() -> Path:
     """Return the shared CLI history file path."""
-    return Path.home() / ".nanobot" / "history" / "cli_history"
+    return InstanceManager.get().get_path("history") / "cli_history"
 
 
 def get_bridge_install_dir() -> Path:
-    """Return the shared WhatsApp bridge installation directory."""
-    return Path.home() / ".nanobot" / "bridge"
+    """Return the WhatsApp bridge installation directory for the current instance."""
+    return InstanceManager.get().get_path("bridge")
 
 
 def get_legacy_sessions_dir() -> Path:
