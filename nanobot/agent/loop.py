@@ -52,7 +52,7 @@ class AgentLoop:
         self,
         bus: MessageBus,
         provider: LLMProvider,
-        workspace: Path,
+        workspace: Path | None = None,
         model: str | None = None,
         max_iterations: int = 40,
         context_window_tokens: int = 65_536,
@@ -64,13 +64,28 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        workspace_manager: WorkspaceManager | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig, WebSearchConfig
+        from nanobot.workspace.manager import WorkspaceManager
 
         self.bus = bus
         self.channels_config = channels_config
         self.provider = provider
-        self.workspace = workspace
+
+        # Initialize workspace manager
+        if workspace_manager:
+            self.workspace_manager = workspace_manager
+        else:
+            from nanobot.config.loader import load_config
+            config = load_config()
+            self.workspace_manager = WorkspaceManager(config)
+
+        # Use provided workspace or manager's current workspace
+        if workspace:
+            self.workspace_manager.switch_workspace(workspace)
+
+        self.workspace = self.workspace_manager.current_workspace
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
         self.context_window_tokens = context_window_tokens
@@ -80,12 +95,13 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace)
-        self.sessions = session_manager or SessionManager(workspace)
+        # Initialize components
+        self.context = ContextBuilder(self.workspace)
+        self.sessions = session_manager or SessionManager(self.workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
             provider=provider,
-            workspace=workspace,
+            workspace=self.workspace,
             bus=bus,
             model=self.model,
             web_search_config=self.web_search_config,
@@ -93,6 +109,9 @@ class AgentLoop:
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
+
+        # Register workspace switch callback
+        self.workspace_manager.register_switch_callback(self._on_workspace_switch)
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
@@ -103,7 +122,7 @@ class AgentLoop:
         self._background_tasks: list[asyncio.Task] = []
         self._processing_lock = asyncio.Lock()
         self.memory_consolidator = MemoryConsolidator(
-            workspace=workspace,
+            workspace=self.workspace,
             provider=provider,
             model=self.model,
             sessions=self.sessions,
@@ -112,6 +131,49 @@ class AgentLoop:
             get_tool_definitions=self.tools.get_definitions,
         )
         self._register_default_tools()
+
+    def _on_workspace_switch(self, old_workspace: Path, new_workspace: Path) -> None:
+        """
+        Callback method called when workspace is switched.
+
+        Reinitializes all components that are dependent on the workspace path.
+
+        Args:
+            old_workspace: Previous workspace path
+            new_workspace: New workspace path
+        """
+        logger.info(f"Reinitializing components for workspace: {new_workspace}")
+
+        # Update current workspace reference
+        self.workspace = new_workspace
+
+        # Reinitialize all workspace-dependent components
+        self.context = ContextBuilder(new_workspace)
+        self.sessions = SessionManager(new_workspace)
+        self.subagents = SubagentManager(
+            provider=self.provider,
+            workspace=new_workspace,
+            bus=self.bus,
+            model=self.model,
+            web_search_config=self.web_search_config,
+            web_proxy=self.web_proxy,
+            exec_config=self.exec_config,
+            restrict_to_workspace=self.restrict_to_workspace,
+        )
+        self.memory_consolidator = MemoryConsolidator(
+            workspace=new_workspace,
+            provider=self.provider,
+            model=self.model,
+            sessions=self.sessions,
+            context_window_tokens=self.context_window_tokens,
+            build_messages=self.context.build_messages,
+            get_tool_definitions=self.tools.get_definitions,
+        )
+
+        # Re-register tools with new workspace context
+        self._register_default_tools()
+
+        logger.success(f"Components reinitialized for workspace: {new_workspace}")
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -132,6 +194,16 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Register workspace management tools
+        from nanobot.agent.tools.workspace import (
+            SwitchWorkspaceTool,
+            ListWorkspacesTool,
+            GetWorkspaceInfoTool
+        )
+        self.tools.register(SwitchWorkspaceTool(self.workspace_manager))
+        self.tools.register(ListWorkspacesTool(self.workspace_manager))
+        self.tools.register(GetWorkspaceInfoTool(self.workspace_manager))
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
