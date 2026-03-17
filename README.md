@@ -1278,6 +1278,83 @@ nanobot gateway --config ~/.nanobot-telegram/config.json --workspace /tmp/nanobo
 - `--workspace` overrides the workspace defined in the config file
 - Cron jobs and runtime media/state are derived from the config directory
 
+## 🚀 Hot-Pluggable Instances
+
+Starting from v0.1.5, nanobot supports full instance-level hot-plugging, allowing you to switch between complete nanobot environments at runtime without restarting. Each instance is a self-contained directory similar to `~/.nanobot`, including:
+
+- ⚙️ Configuration (`config.json`)
+- 📁 Workspace (skills, memory, sessions)
+- ⏰ Cron jobs
+- 📜 CLI history
+- 📝 Log files
+- 🎨 Media files
+- 🌉 WhatsApp bridge installation
+
+### Instance Management CLI
+
+Use the `nanobot instance` command group to manage instances:
+
+#### List all instances
+```bash
+nanobot instance list
+```
+
+Output:
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
+┃ Path                                              ┃ Name     ┃ Current ┃ Exists ┃ Config ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
+│ /home/user/.nanobot                               │ default  │ ✓       │ ✓      │ ✓      │
+│ /home/user/instances/work-nanobot                 │ work     │ ✗       │ ✓      │ ✓      │
+│ /home/user/instances/personal-nanobot             │ personal │ ✗       │ ✓      │ ✓      │
+└───────────────────────────────────────────────────┴──────────┴─────────┴────────┴────────┘
+```
+
+#### Show instance details
+```bash
+# Show current instance
+nanobot instance info
+
+# Show specific instance
+nanobot instance info /path/to/instance
+```
+
+#### Create a new instance
+```bash
+nanobot instance create ~/instances/my-new-instance --name "My Instance"
+```
+This creates a complete instance directory structure with default configuration.
+
+#### Set default instance
+```bash
+nanobot instance switch ~/instances/work-nanobot
+```
+This creates a symlink at `~/.nanobot` pointing to the selected instance, making it the default for all future commands.
+
+### Runtime Instance Switching
+
+You can switch entire instances at runtime using the agent's built-in tools:
+
+```
+# Switch to a new instance
+switch_instance(path="/path/to/instance", name="work-instance")
+
+# List available instances
+list_instances()
+
+# Get current instance info
+get_instance_info()
+
+# Create a new instance
+create_instance(path="/path/to/new/instance", name="new-project")
+```
+
+When you switch instances at runtime:
+- All components are automatically reinitialized with the new instance's configuration
+- No restart required
+- Existing connections are preserved
+- All data (config, cron, history, workspace) is fully isolated between instances
+
 ## 🔌 Hot-Pluggable Workspaces
 
 Starting from v0.1.5, nanobot supports hot-pluggable workspaces, allowing you to switch between different workspaces at runtime without restarting the agent. Each workspace maintains its own:
@@ -1363,6 +1440,10 @@ When you switch workspaces at runtime:
 | `nanobot provider login openai-codex` | OAuth login for providers |
 | `nanobot channels login` | Link WhatsApp (scan QR) |
 | `nanobot channels status` | Show channel status |
+| `nanobot instance list` | List all available instances |
+| `nanobot instance info [path]` | Show instance details |
+| `nanobot instance create <path> [--name <name>]` | Create a new instance |
+| `nanobot instance switch <path> [--name <name>]` | Set default instance |
 | `nanobot workspace list` | List all available workspaces |
 | `nanobot workspace info [path]` | Show workspace details |
 | `nanobot workspace create <path> [--name <name>]` | Create a new workspace |
