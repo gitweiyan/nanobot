@@ -151,7 +151,7 @@ class GetInstanceInfoTool(Tool):
             },
             "additionalProperties": False
         }
-    }
+    
     def __init__(self, instance_manager: InstanceManager | None = None):
         self.instance_manager = instance_manager or InstanceManager.get()
 
