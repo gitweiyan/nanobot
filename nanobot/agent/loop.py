@@ -65,6 +65,7 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
         workspace_manager: WorkspaceManager | None = None,
+        memory_auto_directives: bool = True,
     ):
         from nanobot.config.schema import ExecToolConfig, WebSearchConfig
         from nanobot.workspace.manager import WorkspaceManager
@@ -94,6 +95,7 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.memory_auto_directives = memory_auto_directives
 
         # Initialize components
         self.context = ContextBuilder(self.workspace)
@@ -528,17 +530,18 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines),
             )
 
-        directive_reply = self.context.memory.manager.handle_user_directive(msg.content)
-        if directive_reply is not None:
-            session.add_message("user", msg.content)
-            session.add_message("assistant", directive_reply)
-            self.sessions.save(session)
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=directive_reply,
-                metadata=msg.metadata or {},
-            )
+        if self.memory_auto_directives:
+            directive_reply = self.context.memory.manager.handle_user_directive(msg.content)
+            if directive_reply is not None:
+                session.add_message("user", msg.content)
+                session.add_message("assistant", directive_reply)
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=directive_reply,
+                    metadata=msg.metadata or {},
+                )
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))

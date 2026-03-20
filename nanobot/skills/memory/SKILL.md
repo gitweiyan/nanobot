@@ -36,6 +36,10 @@ Explicit directives supported by the memory manager:
 - `记住 ...` / `remember ...` — store as high-confidence user memory
 - `忘记 ...` / `forget ...` — deprecate matched memory items
 - `查看记忆` / `show memory` — inspect current active memories
+- Slash forms are also supported: `/remember ...`, `/forget ...`, `/memory`
+
+Directive parsing is intentionally strict (single-line, short command-like input) to reduce accidental triggers.
+You can disable automatic directive interception with config: `agents.defaults.memoryAutoDirectives=false`.
 
 ## Auto-consolidation
 
