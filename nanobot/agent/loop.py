@@ -527,6 +527,18 @@ class AgentLoop:
             return OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines),
             )
+
+        directive_reply = self.context.memory.manager.handle_user_directive(msg.content)
+        if directive_reply is not None:
+            session.add_message("user", msg.content)
+            session.add_message("assistant", directive_reply)
+            self.sessions.save(session)
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=directive_reply,
+                metadata=msg.metadata or {},
+            )
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
