@@ -8,30 +8,31 @@ always: true
 
 ## Structure
 
-- `memory/MEMORY.md` — Long-term facts (preferences, project context, relationships). Always loaded into your context.
-- `memory/HISTORY.md` — Append-only event log. NOT loaded into context. Search it with grep-style tools or in-memory filters. Each entry starts with [YYYY-MM-DD HH:MM].
+- `memory/items.jsonl` — Structured long-term memory items (source of truth for recall).
+- `memory/events.jsonl` — Structured event history for consolidation/audit.
+- `memory/MEMORY.md` — Human-readable projection of long-term memory.
+- `memory/HISTORY.md` — Append-only legacy history log for grep/search compatibility.
 
 ## Search Past Events
 
 Choose the search method based on file size:
 
-- Small `memory/HISTORY.md`: use `read_file`, then search in-memory
-- Large or long-lived `memory/HISTORY.md`: use the `exec` tool for targeted search
+- Small history files: use `read_file`, then search in-memory
+- Large or long-lived history files: use the `exec` tool for targeted search
 
 Examples:
 - **Linux/macOS:** `grep -i "keyword" memory/HISTORY.md`
 - **Windows:** `findstr /i "keyword" memory\HISTORY.md`
-- **Cross-platform Python:** `python -c "from pathlib import Path; text = Path('memory/HISTORY.md').read_text(encoding='utf-8'); print('\n'.join([l for l in text.splitlines() if 'keyword' in l.lower()][-20:]))"`
+- **Structured events:** search `memory/events.jsonl` with targeted commands
 
 Prefer targeted command-line search for large history files.
 
-## When to Update MEMORY.md
+## When to Update Memory
 
-Write important facts immediately using `edit_file` or `write_file`:
-- User preferences ("I prefer dark mode")
-- Project context ("The API uses OAuth2")
-- Relationships ("Alice is the project lead")
+Prefer the unified memory pipeline (automatic consolidation + explicit user requests like "remember this").
+Do **not** directly overwrite `memory/MEMORY.md` unless the user explicitly asks to edit that file.
 
 ## Auto-consolidation
 
-Old conversations are automatically summarized and appended to HISTORY.md when the session grows large. Long-term facts are extracted to MEMORY.md. You don't need to manage this.
+Old conversations are automatically consolidated when the session grows large.
+Structured memory is stored in `items.jsonl`/`events.jsonl`, with `MEMORY.md` kept as a readable projection.

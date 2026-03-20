@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from loguru import logger
 
-from nanobot.utils.helpers import ensure_dir, estimate_message_tokens, estimate_prompt_tokens_chain
+from nanobot.memory import MemoryManager
+from nanobot.utils.helpers import estimate_message_tokens, estimate_prompt_tokens_chain
 
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
@@ -78,26 +79,23 @@ class MemoryStore:
     _MAX_FAILURES_BEFORE_RAW_ARCHIVE = 3
 
     def __init__(self, workspace: Path):
-        self.memory_dir = ensure_dir(workspace / "memory")
-        self.memory_file = self.memory_dir / "MEMORY.md"
-        self.history_file = self.memory_dir / "HISTORY.md"
+        self.manager = MemoryManager(workspace)
+        self.memory_dir = self.manager.store.memory_dir
+        self.memory_file = self.manager.store.memory_file
+        self.history_file = self.manager.store.history_file
         self._consecutive_failures = 0
 
     def read_long_term(self) -> str:
-        if self.memory_file.exists():
-            return self.memory_file.read_text(encoding="utf-8")
-        return ""
+        return self.manager.read_long_term()
 
     def write_long_term(self, content: str) -> None:
-        self.memory_file.write_text(content, encoding="utf-8")
+        self.manager.write_long_term(content)
 
     def append_history(self, entry: str) -> None:
-        with open(self.history_file, "a", encoding="utf-8") as f:
-            f.write(entry.rstrip() + "\n\n")
+        self.manager.append_history(entry)
 
-    def get_memory_context(self) -> str:
-        long_term = self.read_long_term()
-        return f"## Long-term Memory\n{long_term}" if long_term else ""
+    def get_memory_context(self, query: str | None = None) -> str:
+        return self.manager.get_relevant_context(query)
 
     @staticmethod
     def _format_messages(messages: list[dict]) -> str:
@@ -186,10 +184,12 @@ class MemoryStore:
                 logger.warning("Memory consolidation: history_entry is empty after normalization")
                 return self._fail_or_raw_archive(messages)
 
-            self.append_history(entry)
             update = _ensure_text(update)
-            if update != current_memory:
-                self.write_long_term(update)
+            self.manager.apply_consolidation(
+                history_entry=entry,
+                memory_update=update,
+                source_messages=messages,
+            )
 
             self._consecutive_failures = 0
             logger.info("Memory consolidation done for {} messages", len(messages))
@@ -210,10 +210,11 @@ class MemoryStore:
     def _raw_archive(self, messages: list[dict]) -> None:
         """Fallback: dump raw messages to HISTORY.md without LLM summarization."""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.append_history(
+        summary = (
             f"[{ts}] [RAW] {len(messages)} messages\n"
             f"{self._format_messages(messages)}"
         )
+        self.manager.record_raw_archive(messages, summary)
         logger.warning(
             "Memory consolidation degraded: raw-archived {} messages", len(messages)
         )

@@ -24,7 +24,23 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    @staticmethod
+    def _extract_query_text(message: str | list[dict[str, Any]]) -> str:
+        if isinstance(message, str):
+            return message
+        parts: list[str] = []
+        for block in message:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+
+    def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        memory_query: str | None = None,
+    ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
 
@@ -32,7 +48,7 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        memory = self.memory.get_memory_context()
+        memory = self.memory.get_memory_context(memory_query)
         if memory:
             parts.append(f"# Memory\n\n{memory}")
 
@@ -81,8 +97,9 @@ You are nanobot, a helpful AI assistant.
 
 ## Workspace
 Your workspace is at: {workspace_path}
-- Long-term memory: {workspace_path}/memory/MEMORY.md (write important facts here)
+- Long-term memory projection: {workspace_path}/memory/MEMORY.md
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable). Each entry starts with [YYYY-MM-DD HH:MM].
+- Structured memory items: {workspace_path}/memory/items.jsonl (source of truth for recall)
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 {platform_policy}
@@ -138,8 +155,9 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
+        memory_query = self._extract_query_text(current_message)
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, memory_query=memory_query)},
             *history,
             {"role": current_role, "content": merged},
         ]

@@ -1,6 +1,6 @@
 # Long-term Memory
 
-This file stores important information that should persist across sessions.
+This file is a human-readable long-term memory projection that persists across sessions.
 
 ## User Information
 
@@ -20,4 +20,4 @@ This file stores important information that should persist across sessions.
 
 ---
 
-*This file is automatically updated by nanobot when important information should be remembered.*
+*This file may be automatically refreshed from structured memory (`memory/items.jsonl`).*
