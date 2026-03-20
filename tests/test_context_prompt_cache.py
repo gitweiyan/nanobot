@@ -71,3 +71,14 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     assert "Channel: cli" in user_content
     assert "Chat ID: direct" in user_content
     assert "Return exactly: OK" in user_content
+
+
+def test_identity_prompt_keeps_persona_out_of_hardcoded_section(tmp_path) -> None:
+    """Persona/style should come from templates, not hardcoded identity text."""
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+    identity = builder._get_identity()
+
+    assert "helpful AI assistant" not in identity
+    assert "## nanobot Guidelines" not in identity
+    assert "## Non-negotiable Safety Constraints" in identity
