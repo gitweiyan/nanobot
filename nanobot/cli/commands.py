@@ -269,6 +269,25 @@ def _effective_instance(instance: str | None) -> str | None:
     return instance or _CLI_INSTANCE_OVERRIDE
 
 
+def _normalize_instance_create_path(raw: str) -> Path:
+    """Resolve create target path.
+
+    Rules:
+    - If caller passes an explicit path (absolute, ~/..., or contains separators), keep it as-is.
+    - If caller passes a short name (e.g. "wybot"), create under HOME as hidden dir "~/.wybot".
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("instance path/name cannot be empty")
+
+    explicit = text.startswith("~") or Path(text).is_absolute() or ("/" in text) or ("\\" in text)
+    if explicit:
+        return Path(text).expanduser().resolve()
+
+    hidden_name = text if text.startswith(".") else f".{text}"
+    return (Path.home() / hidden_name).resolve()
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(
@@ -1077,7 +1096,7 @@ def instance_info(
 
 @instance_app.command("create")
 def instance_create(
-    path: str = typer.Argument(..., help="Path to new instance root directory"),
+    path: str = typer.Argument(..., help="Instance name or path. Name 'wybot' -> ~/.wybot"),
     name: str | None = typer.Option(None, "--name", "-n", help="Name for the instance")
 ):
     """Create a new nanobot instance with full directory structure and default config."""
@@ -1086,7 +1105,8 @@ def instance_create(
     instance_manager = InstanceManager.get()
 
     try:
-        instance_path = instance_manager.create_instance(path, name=name)
+        target = _normalize_instance_create_path(path)
+        instance_path = instance_manager.create_instance(target, name=name)
         if instance_path:
             console.print(f"[green]✓[/green] Instance created successfully at: {instance_path}")
             console.print(
