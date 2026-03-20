@@ -182,23 +182,51 @@ class MemoryManager:
         return "\n".join(lines)
 
     _REMEMBER_PATTERNS = (
+        re.compile(r"^\s*/remember\s+(.+)$", re.IGNORECASE),
         re.compile(r"^\s*remember(?:\s+that)?\s+(.+)$", re.IGNORECASE),
+        re.compile(r"^\s*/记住\s+(.+)$"),
         re.compile(r"^\s*(?:请)?(?:帮我)?记住[:：]?\s*(.+)$"),
     )
     _FORGET_PATTERNS = (
+        re.compile(r"^\s*/forget\s+(.+)$", re.IGNORECASE),
         re.compile(r"^\s*(?:forget|remove memory|delete memory)\s+(.+)$", re.IGNORECASE),
+        re.compile(r"^\s*/忘记\s+(.+)$"),
         re.compile(r"^\s*(?:请)?(?:帮我)?忘记[:：]?\s*(.+)$"),
     )
     _SHOW_PATTERNS = (
+        re.compile(r"^\s*/memory(?:\s+show)?\s*$", re.IGNORECASE),
         re.compile(r"^\s*(?:show|list)\s+(?:memory|memories)\s*$", re.IGNORECASE),
         re.compile(r"^\s*what do you remember\s*$", re.IGNORECASE),
         re.compile(r"^\s*(?:查看|显示|列出)?(?:我的)?记忆\s*$"),
         re.compile(r"^\s*你记得什么\s*\??\s*$"),
     )
 
-    def handle_user_directive(self, text: str) -> str | None:
+    _MAX_DIRECTIVE_CHARS = 220
+
+    @staticmethod
+    def _looks_like_question(text: str) -> bool:
         raw = (text or "").strip()
         if not raw:
+            return False
+        if raw.endswith("?") or raw.endswith("？"):
+            return True
+        return bool(re.search(r"(吗|么|呢)\s*[?？]?\s*$", raw))
+
+    def _eligible_directive_text(self, text: str) -> str | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        if len(raw) > self._MAX_DIRECTIVE_CHARS:
+            return None
+        if "\n" in raw or "\r" in raw:
+            return None
+        if "```" in raw:
+            return None
+        return raw
+
+    def handle_user_directive(self, text: str) -> str | None:
+        raw = self._eligible_directive_text(text)
+        if raw is None:
             return None
         for pat in self._SHOW_PATTERNS:
             if pat.match(raw):
@@ -208,7 +236,11 @@ class MemoryManager:
             m = pat.match(raw)
             if not m:
                 continue
+            if self._looks_like_question(raw):
+                return None
             content = (m.group(1) or "").strip()
+            if len(content) < 2:
+                return "未识别到可保存的记忆内容。"
             item = self.remember_from_user_text(content)
             if not item:
                 return "未识别到可保存的记忆内容。"
@@ -218,6 +250,8 @@ class MemoryManager:
             m = pat.match(raw)
             if not m:
                 continue
+            if self._looks_like_question(raw):
+                return None
             query = (m.group(1) or "").strip()
             if not query:
                 return "请告诉我你想忘记什么。"

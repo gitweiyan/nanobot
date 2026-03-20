@@ -13,7 +13,7 @@ from nanobot.memory import MemoryManager
 from nanobot.providers.base import LLMResponse
 
 
-def _make_loop(tmp_path: Path) -> AgentLoop:
+def _make_loop(tmp_path: Path, *, memory_auto_directives: bool = True) -> AgentLoop:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
     provider.estimate_prompt_tokens.return_value = (20, "test-counter")
@@ -25,6 +25,7 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
         workspace=tmp_path,
         model="test-model",
         context_window_tokens=200,
+        memory_auto_directives=memory_auto_directives,
     )
     loop.tools.get_definitions = MagicMock(return_value=[])
     return loop
@@ -76,3 +77,25 @@ def test_preference_update_marks_prior_preference_conflicted(tmp_path: Path) -> 
     active = manager.store.list_items(scope="user", kind="preference", status="active")
     assert conflicted
     assert len(active) == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_directives_can_be_disabled_by_config(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path, memory_auto_directives=False)
+
+    response = await loop.process_direct("记住 我喜欢简洁回答", session_key="cli:test")
+
+    assert response == "ok"
+    loop.provider.chat_with_retry.assert_awaited()
+    assert not loop.context.memory.manager.store.read_items()
+
+
+def test_question_like_remember_text_not_intercepted(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path)
+    assert manager.handle_user_directive("记住了吗？") is None
+    assert manager.handle_user_directive("forget this?") is None
+
+
+def test_multiline_input_not_intercepted(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path)
+    assert manager.handle_user_directive("记住 我喜欢A\n另外我喜欢B") is None
