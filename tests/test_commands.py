@@ -129,6 +129,45 @@ def test_onboard_help_shows_workspace_and_config_options():
     assert "--dir" not in stripped_output
 
 
+def test_agent_help_shows_instance_option():
+    result = runner.invoke(app, ["agent", "--help"])
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "--instance" in stripped_output
+    assert "-i" in stripped_output
+
+
+def test_gateway_help_shows_instance_option():
+    result = runner.invoke(app, ["gateway", "--help"])
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "--instance" in stripped_output
+    assert "-i" in stripped_output
+
+
+def test_global_instance_option_applies_to_status(tmp_path):
+    import nanobot.cli.commands as commands_module
+    from nanobot.instance.manager import InstanceManager
+
+    # Ensure singleton state from other tests does not leak.
+    InstanceManager.get().cleanup()
+    commands_module._CLI_INSTANCE_OVERRIDE = None
+
+    instance_dir = tmp_path / "wybot"
+    instance_dir.mkdir(parents=True, exist_ok=True)
+    (instance_dir / "config.json").write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(app, ["--instance", str(instance_dir), "status"])
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert str(instance_dir / "config.json") in stripped_output
+    commands_module._CLI_INSTANCE_OVERRIDE = None
+    InstanceManager.get().cleanup()
+
+
 def test_onboard_uses_explicit_config_and_workspace_paths(tmp_path, monkeypatch):
     config_path = tmp_path / "instance" / "config.json"
     workspace_path = tmp_path / "workspace"

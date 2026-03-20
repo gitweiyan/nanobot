@@ -45,6 +45,7 @@ app = typer.Typer(
 
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
+_CLI_INSTANCE_OVERRIDE: str | None = None
 
 # ---------------------------------------------------------------------------
 # CLI input: prompt_toolkit for editing, paste, history, and display
@@ -246,14 +247,41 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 
+def _activate_instance(instance: str | None) -> Path | None:
+    """Switch current process context to a specific instance root."""
+    if not instance:
+        return None
+    from nanobot.instance.manager import InstanceManager
+
+    path = Path(instance).expanduser().resolve()
+    mgr = InstanceManager.get()
+    if mgr.current_instance == path:
+        return path
+    if not mgr.switch_instance(path, initialize=False):
+        console.print(f"[red]Error: Failed to switch instance: {path}[/red]")
+        console.print("[dim]Make sure the instance exists and contains config.json[/dim]")
+        raise typer.Exit(1)
+    return path
+
+
+def _effective_instance(instance: str | None) -> str | None:
+    """Prefer command-level instance option, fallback to global override."""
+    return instance or _CLI_INSTANCE_OVERRIDE
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True
     ),
+    instance: str | None = typer.Option(
+        None, "--instance", "-i", help="Path to instance root directory"
+    ),
 ):
     """nanobot - Personal AI Assistant."""
-    pass
+    global _CLI_INSTANCE_OVERRIDE
+    _CLI_INSTANCE_OVERRIDE = instance
+    _activate_instance(instance)
 
 
 # ============================================================================
@@ -460,6 +488,7 @@ def gateway(
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    instance: str | None = typer.Option(None, "--instance", "-i", help="Path to instance root directory"),
 ):
     """Start the nanobot gateway."""
     from nanobot.agent.loop import AgentLoop
@@ -475,6 +504,7 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
 
+    _activate_instance(_effective_instance(instance))
     config = _load_runtime_config(config, workspace)
     _print_deprecated_memory_window_notice(config)
     port = port if port is not None else config.gateway.port
@@ -656,6 +686,7 @@ def agent(
     session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
+    instance: str | None = typer.Option(None, "--instance", "-i", help="Path to instance root directory"),
     markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
 ):
@@ -667,6 +698,7 @@ def agent(
     from nanobot.config.paths import get_cron_dir
     from nanobot.cron.service import CronService
 
+    _activate_instance(_effective_instance(instance))
     config = _load_runtime_config(config, workspace)
     _print_deprecated_memory_window_notice(config)
     sync_workspace_templates(config.workspace_path)
@@ -1057,7 +1089,10 @@ def instance_create(
         instance_path = instance_manager.create_instance(path, name=name)
         if instance_path:
             console.print(f"[green]✓[/green] Instance created successfully at: {instance_path}")
-            console.print(f"[dim]Use 'nanobot --instance {path}' to run with this instance[/dim]")
+            console.print(
+                f"[dim]Use 'nanobot agent --instance {instance_path} -m \"Hello\"' "
+                f"or 'nanobot --instance {instance_path} agent -m \"Hello\"'[/dim]"
+            )
         else:
             console.print(f"[red]✗[/red] Failed to create instance")
             raise typer.Exit(1)
@@ -1273,6 +1308,8 @@ def plugins_list():
 def status():
     """Show nanobot status."""
     from nanobot.config.loader import get_config_path, load_config
+
+    _activate_instance(_effective_instance(None))
 
     config_path = get_config_path()
     config = load_config()
