@@ -99,3 +99,27 @@ def test_question_like_remember_text_not_intercepted(tmp_path: Path) -> None:
 def test_multiline_input_not_intercepted(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path)
     assert manager.handle_user_directive("记住 我喜欢A\n另外我喜欢B") is None
+
+
+def test_parse_user_directive_returns_structured_reason(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path)
+
+    matched = manager.parse_user_directive("/remember I prefer concise replies")
+    rejected = manager.parse_user_directive("记住了吗？")
+
+    assert matched["matched"] is True
+    assert matched["action"] == "remember"
+    assert matched["reason"] == "remember_pattern_matched"
+    assert rejected["matched"] is False
+    assert rejected["reason"] == "question_like_remember"
+
+
+def test_handle_user_directive_with_meta_exposes_reason(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path)
+    reply, meta = manager.handle_user_directive_with_meta("/memory")
+
+    assert reply is not None
+    assert "当前可用记忆" in reply or "没有可用的结构化记忆" in reply
+    assert meta["matched"] is True
+    assert meta["action"] == "show"
+    assert meta["reason"] == "show_pattern_matched"

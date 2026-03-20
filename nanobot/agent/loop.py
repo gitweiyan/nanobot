@@ -531,7 +531,14 @@ class AgentLoop:
             )
 
         if self.memory_auto_directives:
-            directive_reply = self.context.memory.manager.handle_user_directive(msg.content)
+            directive_reply, directive_meta = self.context.memory.manager.handle_user_directive_with_meta(msg.content)
+            logger.debug(
+                "Memory directive parse {}: matched={} action={} reason={}",
+                session.key,
+                directive_meta.get("matched"),
+                directive_meta.get("action"),
+                directive_meta.get("reason"),
+            )
             if directive_reply is not None:
                 session.add_message("user", msg.content)
                 session.add_message("assistant", directive_reply)
@@ -542,6 +549,8 @@ class AgentLoop:
                     content=directive_reply,
                     metadata=msg.metadata or {},
                 )
+        else:
+            logger.debug("Memory auto directives disabled for {}", session.key)
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
