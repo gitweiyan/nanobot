@@ -71,6 +71,25 @@ class StructuredMemoryStore:
     def read_events(self) -> list[dict[str, Any]]:
         return self._read_jsonl(self.events_file)
 
+    def list_items(
+        self,
+        *,
+        scope: str | None = None,
+        kind: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        items = self.read_items()
+        out: list[dict[str, Any]] = []
+        for item in items:
+            if scope and item.get("scope") != scope:
+                continue
+            if kind and item.get("kind") != kind:
+                continue
+            if status and item.get("status") != status:
+                continue
+            out.append(item)
+        return out
+
     def append_event(self, event: dict[str, Any]) -> None:
         event = dict(event)
         event.setdefault("id", "evt_" + hashlib.sha1(json.dumps(event, sort_keys=True).encode("utf-8")).hexdigest()[:12])
@@ -130,6 +149,22 @@ class StructuredMemoryStore:
 
         self._write_jsonl(self.items_file, items)
         return found
+
+    def update_item_status(self, item_ids: list[str], status: str) -> int:
+        if not item_ids:
+            return 0
+        ids = set(item_ids)
+        now = _now_iso()
+        items = self.read_items()
+        updated = 0
+        for item in items:
+            if item.get("id") in ids and item.get("status") != status:
+                item["status"] = status
+                item["updated_at"] = now
+                updated += 1
+        if updated:
+            self._write_jsonl(self.items_file, items)
+        return updated
 
     def touch_items(self, item_ids: list[str]) -> None:
         if not item_ids:
@@ -193,3 +228,29 @@ class StructuredMemoryStore:
             reverse=True,
         )
         return ranked[: max(1, limit)]
+
+    def find_items_for_query(
+        self,
+        query: str,
+        *,
+        statuses: tuple[str, ...] = ("active",),
+        scope: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        q = (query or "").strip()
+        if not q:
+            return []
+        items = []
+        allowed = set(statuses)
+        for item in self.read_items():
+            if item.get("status", "active") not in allowed:
+                continue
+            if scope and item.get("scope") != scope:
+                continue
+            items.append(item)
+        ranked = sorted(
+            items,
+            key=lambda i: (self._score_item(i, q), i.get("updated_at", "")),
+            reverse=True,
+        )
+        return [item for item in ranked if self._score_item(item, q) > 0][: max(1, limit)]

@@ -32,6 +32,11 @@ Prefer targeted command-line search for large history files.
 Prefer the unified memory pipeline (automatic consolidation + explicit user requests like "remember this").
 Do **not** directly overwrite `memory/MEMORY.md` unless the user explicitly asks to edit that file.
 
+Explicit directives supported by the memory manager:
+- `记住 ...` / `remember ...` — store as high-confidence user memory
+- `忘记 ...` / `forget ...` — deprecate matched memory items
+- `查看记忆` / `show memory` — inspect current active memories
+
 ## Auto-consolidation
 
 Old conversations are automatically consolidated when the session grows large.
