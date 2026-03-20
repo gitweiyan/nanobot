@@ -168,6 +168,41 @@ def test_global_instance_option_applies_to_status(tmp_path):
     InstanceManager.get().cleanup()
 
 
+def test_instance_create_short_name_maps_to_hidden_home(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+
+    captured: dict[str, Path] = {}
+
+    class _DummyManager:
+        def create_instance(self, instance_path, name=None):
+            captured["path"] = Path(instance_path)
+            return Path(instance_path)
+
+    monkeypatch.setattr("nanobot.instance.manager.InstanceManager.get", lambda: _DummyManager())
+
+    result = runner.invoke(app, ["instance", "create", "wybot"])
+    assert result.exit_code == 0
+    assert captured["path"] == (fake_home / ".wybot")
+
+
+def test_instance_create_explicit_path_kept(tmp_path, monkeypatch):
+    explicit = tmp_path / "my-instance"
+    captured: dict[str, Path] = {}
+
+    class _DummyManager:
+        def create_instance(self, instance_path, name=None):
+            captured["path"] = Path(instance_path)
+            return Path(instance_path)
+
+    monkeypatch.setattr("nanobot.instance.manager.InstanceManager.get", lambda: _DummyManager())
+
+    result = runner.invoke(app, ["instance", "create", str(explicit)])
+    assert result.exit_code == 0
+    assert captured["path"] == explicit.resolve()
+
+
 def test_onboard_uses_explicit_config_and_workspace_paths(tmp_path, monkeypatch):
     config_path = tmp_path / "instance" / "config.json"
     workspace_path = tmp_path / "workspace"
