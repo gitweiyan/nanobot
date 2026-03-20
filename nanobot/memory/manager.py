@@ -224,39 +224,120 @@ class MemoryManager:
             return None
         return raw
 
-    def handle_user_directive(self, text: str) -> str | None:
+    def parse_user_directive(self, text: str) -> dict[str, Any]:
+        """Parse potential memory directive with explicit reason for audit/debug."""
         raw = self._eligible_directive_text(text)
         if raw is None:
-            return None
+            value = (text or "").strip()
+            if not value:
+                return {"matched": False, "reason": "empty_input"}
+            if len(value) > self._MAX_DIRECTIVE_CHARS:
+                return {"matched": False, "reason": "too_long"}
+            if "\n" in value or "\r" in value:
+                return {"matched": False, "reason": "multiline"}
+            if "```" in value:
+                return {"matched": False, "reason": "contains_code_block"}
+            return {"matched": False, "reason": "ineligible_text"}
+
         for pat in self._SHOW_PATTERNS:
             if pat.match(raw):
-                return self.render_memory_snapshot()
+                return {
+                    "matched": True,
+                    "action": "show",
+                    "payload": {},
+                    "reason": "show_pattern_matched",
+                    "raw": raw,
+                }
 
         for pat in self._REMEMBER_PATTERNS:
             m = pat.match(raw)
             if not m:
                 continue
             if self._looks_like_question(raw):
-                return None
+                return {"matched": False, "reason": "question_like_remember", "raw": raw}
             content = (m.group(1) or "").strip()
             if len(content) < 2:
-                return "未识别到可保存的记忆内容。"
-            item = self.remember_from_user_text(content)
-            if not item:
-                return "未识别到可保存的记忆内容。"
-            return f"已记住：{item.get('content')}"
+                return {"matched": False, "reason": "remember_content_too_short", "raw": raw}
+            return {
+                "matched": True,
+                "action": "remember",
+                "payload": {"content": content},
+                "reason": "remember_pattern_matched",
+                "raw": raw,
+            }
 
         for pat in self._FORGET_PATTERNS:
             m = pat.match(raw)
             if not m:
                 continue
             if self._looks_like_question(raw):
-                return None
+                return {"matched": False, "reason": "question_like_forget", "raw": raw}
             query = (m.group(1) or "").strip()
+            if not query:
+                return {"matched": False, "reason": "forget_query_empty", "raw": raw}
+            return {
+                "matched": True,
+                "action": "forget",
+                "payload": {"query": query},
+                "reason": "forget_pattern_matched",
+                "raw": raw,
+            }
+
+        return {"matched": False, "reason": "no_pattern_match", "raw": raw}
+
+    def apply_user_directive(self, decision: dict[str, Any]) -> str:
+        """Execute a parsed directive decision."""
+        action = str(decision.get("action") or "")
+        reason = str(decision.get("reason") or "")
+        payload = decision.get("payload") or {}
+
+        if action == "show":
+            self.store.append_event({"type": "memory_inspect", "parser_reason": reason})
+            return self.render_memory_snapshot()
+
+        if action == "remember":
+            content = str(payload.get("content") or "").strip()
+            item = self.remember_from_user_text(content)
+            if not item:
+                return "未识别到可保存的记忆内容。"
+            self.store.append_event(
+                {
+                    "type": "memory_directive_applied",
+                    "action": "remember",
+                    "parser_reason": reason,
+                    "memory_id": item.get("id"),
+                }
+            )
+            return f"已记住：{item.get('content')}"
+
+        if action == "forget":
+            query = str(payload.get("query") or "").strip()
             if not query:
                 return "请告诉我你想忘记什么。"
             count = self.forget_by_query(query)
+            self.store.append_event(
+                {
+                    "type": "memory_directive_applied",
+                    "action": "forget",
+                    "parser_reason": reason,
+                    "query": query,
+                    "matched": count,
+                }
+            )
             if count <= 0:
                 return "没有找到可删除的匹配记忆。"
             return f"已忘记 {count} 条匹配记忆。"
-        return None
+
+        return "未识别到可执行的记忆指令。"
+
+    def handle_user_directive_with_meta(self, text: str) -> tuple[str | None, dict[str, Any]]:
+        """Return (reply, parse_decision) for caller-side auditing/logging."""
+        decision = self.parse_user_directive(text)
+        if not decision.get("matched"):
+            return None, decision
+        return self.apply_user_directive(decision), decision
+
+    def handle_user_directive(self, text: str) -> str | None:
+        """Backward-compatible helper: parse + apply when matched."""
+        reply, _decision = self.handle_user_directive_with_meta(text)
+        return reply
