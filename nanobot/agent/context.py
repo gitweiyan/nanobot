@@ -42,13 +42,11 @@ class ContextBuilder:
         self,
         skill_names: list[str] | None = None,
         memory_query: str | None = None,
-        user_intent: str | None = None,
     ) -> str:
         """Build the system prompt from identity, priority layers, and skills."""
         parts = [self._get_identity()]
 
         parts.extend(self.priority.build_priority_blocks(
-            user_intent=user_intent,
             memory_query=memory_query,
         ))
 
@@ -160,7 +158,6 @@ Your workspace is at: {workspace_path}
                 "content": self.build_system_prompt(
                     skill_names,
                     memory_query=memory_query,
-                    user_intent=memory_query,
                 ),
             },
             *history,

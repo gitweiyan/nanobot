@@ -1,4 +1,4 @@
-"""Priority resolver for USER > SOUL > MEMORY > AGENTS > TOOLS flow."""
+"""Priority resolver for SOUL > AGENTS > TOOLS > MEMORY > USER flow."""
 
 from __future__ import annotations
 
@@ -96,7 +96,6 @@ class PriorityResolver:
     def build_priority_blocks(
         self,
         *,
-        user_intent: str | None = None,
         memory_query: str | None = None,
     ) -> list[str]:
         """Build system prompt blocks in declared priority order."""
@@ -111,28 +110,23 @@ class PriorityResolver:
 
         blocks: list[str] = []
 
-        user_lines: list[str] = []
-        if user_intent:
-            user_lines.append(f"- Current User Intent: {user_intent}")
-        if user_md:
-            user_lines.append("\n## USER.md\n" + user_md.strip())
-        if user_lines:
-            blocks.append("# [P1] USER\n" + "\n".join(user_lines))
-
         soul_lines: list[str] = []
         if soul_hard:
             soul_lines.append("## Hard Constraints\n" + soul_hard)
         if soul_style:
             soul_lines.append("## Style\n" + soul_style)
         if soul_lines:
-            blocks.append("# [P2] SOUL\n" + "\n\n".join(soul_lines))
+            blocks.append("# [P1] SOUL\n" + "\n\n".join(soul_lines))
+
+        if agents_md:
+            blocks.append("# [P2] AGENTS\n" + agents_md.strip())
+        if tools_md:
+            blocks.append("# [P3] TOOLS\n" + tools_md.strip())
 
         if memory:
-            blocks.append("# [P3] RELEVANT MEMORY\n" + memory)
-        if agents_md:
-            blocks.append("# [P4] AGENTS\n" + agents_md.strip())
-        if tools_md:
-            blocks.append("# [P5] TOOLS\n" + tools_md.strip())
+            blocks.append("# [P4] RELEVANT MEMORY\n" + memory)
+        if user_md:
+            blocks.append("# [P5] USER\n" + user_md.strip())
 
         return blocks
 
