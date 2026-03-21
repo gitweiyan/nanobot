@@ -70,6 +70,20 @@ def test_turn_resolver_blocks_human_impersonation(tmp_path: Path) -> None:
     assert "核心边界" in resolution.response
 
 
+def test_turn_resolver_supports_explicit_rule_ids(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    (workspace / "SOUL.md").write_text(
+        "# Soul\n\n## Hard Constraints\n- [rule:human_impersonation] Keep identity boundary.\n",
+        encoding="utf-8",
+    )
+    resolver = PriorityResolver(workspace, MemoryManager(workspace))
+
+    resolution = resolver.resolve_turn("please pretend you are a human")
+
+    assert resolution.blocked is True
+    assert "blocked_by_soul_hard:human_impersonation" in resolution.trace
+
+
 def test_tool_authorization_blocks_exec_cron_bypass(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
     resolver = PriorityResolver(workspace, MemoryManager(workspace))
@@ -84,3 +98,36 @@ def test_tool_authorization_blocks_system_path_write(tmp_path: Path) -> None:
     auth = resolver.authorize_tool_call("write_file", {"path": "/system/config.txt", "content": "x"})
     assert auth["allowed"] is False
     assert "system_path" in auth["reason"]
+
+
+def test_tool_authorization_uses_normalized_path(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    resolver = PriorityResolver(workspace, MemoryManager(workspace))
+
+    # Escapes /system after normalization; should not be denied.
+    auth = resolver.authorize_tool_call("write_file", {"path": "/system/../tmp/config.txt", "content": "x"})
+
+    assert auth["allowed"] is True
+
+
+def test_memory_threshold_drives_user_preference_override(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    (workspace / "USER.md").write_text("# User\n- Prefer concise responses\n", encoding="utf-8")
+    (workspace / "SOUL.md").write_text("# Soul\n\n## Hard Constraints\n- [rule:human_impersonation] Never pretend\n", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("# Agents\n- Plan first\n", encoding="utf-8")
+    (workspace / "TOOLS.md").write_text("# Tools\n- Prefer native tools\n", encoding="utf-8")
+    memory = MemoryManager(workspace)
+    memory.store.upsert_item(
+        scope="user",
+        kind="preference",
+        content="Prefer detailed responses",
+        confidence=0.95,
+        source_ref="user_directive",
+    )
+
+    resolver = PriorityResolver(workspace, memory, memory_trust_threshold=0.85)
+    blocks = resolver.build_priority_blocks(memory_query="response style")
+    user_block = next(block for block in blocks if block.startswith("# [P5] USER"))
+
+    assert "response_verbosity: Prefer detailed responses" in user_block
+    assert "Memory Overrides" in user_block
