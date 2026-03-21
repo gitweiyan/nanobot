@@ -214,7 +214,7 @@ class PriorityResolver:
     @staticmethod
     def _infer_preference_key(text: str) -> str | None:
         low = text.lower()
-        if any(k in low for k in ("concise", "brief", "详细", "简洁", "verbosity", "verbose")):
+        if any(k in low for k in ("concise", "brief", "detailed", "详细", "简洁", "verbosity", "verbose")):
             return "response_verbosity"
         if any(k in low for k in ("中文", "english", "language", "语言")):
             return "language"
