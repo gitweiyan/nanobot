@@ -39,7 +39,8 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     max_tool_iterations: int = 40
     memory_auto_directives: bool = True  # Enable explicit remember/forget/show-memory directives
-    enable_priority_resolver: bool = True  # Enable USER > SOUL > MEMORY > AGENTS > TOOLS resolver
+    # Deprecated compatibility field: accepted from old configs but ignored at runtime.
+    enable_priority_resolver: bool | None = Field(default=None, exclude=True)
     enforce_tool_and_role_intersection: bool = True  # Enforce role+tool authorization intersection
     memory_trust_threshold: float = 0.85  # Threshold when trusting inferred memory over profile defaults
     # Deprecated compatibility field: accepted from old configs but ignored at runtime.

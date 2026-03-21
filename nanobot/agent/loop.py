@@ -66,7 +66,6 @@ class AgentLoop:
         channels_config: ChannelsConfig | None = None,
         workspace_manager: WorkspaceManager | None = None,
         memory_auto_directives: bool = True,
-        enable_priority_resolver: bool = True,
         enforce_tool_and_role_intersection: bool = True,
         memory_trust_threshold: float = 0.85,
     ):
@@ -99,7 +98,6 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self.memory_auto_directives = memory_auto_directives
-        self.enable_priority_resolver = enable_priority_resolver
         self.enforce_tool_and_role_intersection = enforce_tool_and_role_intersection
         self.memory_trust_threshold = memory_trust_threshold
 
@@ -214,6 +212,210 @@ class AgentLoop:
         self.workspace_manager.switch_workspace(new_workspace)
 
         logger.success(f"Components reinitialized for instance: {new_instance}")
+
+    # ------------------------------------------------------------------
+    # Tool authorization — delegate to ContextAssembler (path guard only)
+    # ------------------------------------------------------------------
+
+    def _check_tool_authorization(self, tool_name: str, arguments: Any) -> dict[str, Any] | None:
+        """Return a denial dict if the tool call is blocked, else None."""
+        result = self.context.priority.authorize_tool_call(tool_name, arguments)
+        if not result.allowed:
+            return {"allowed": False, "reason": result.reason}
+        return None
+
+    # ------------------------------------------------------------------
+    # Message processing
+    # ------------------------------------------------------------------
+
+    async def _process_message(
+        self,
+        msg: InboundMessage,
+        session_key: str | None = None,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+    ) -> OutboundMessage | None:
+        """Core message handler."""
+        channel = msg.channel
+        chat_id = msg.chat_id
+
+        # Subagent results flow straight into the loop
+        if msg.sender_id == "subagent":
+            await self.memory_consolidator.maybe_consolidate_by_tokens(
+                self.sessions.get_or_create(session_key or msg.session_key)
+            )
+            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            session = self.sessions.get_or_create(session_key or msg.session_key)
+            history = session.get_history(max_messages=0)
+            messages = self.context.build_messages(
+                history=history,
+                current_message=msg.content,
+                channel=channel,
+                chat_id=chat_id,
+                current_role="assistant",
+            )
+            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            self._save_turn(session, all_msgs, 1 + len(history))
+            self.sessions.save(session)
+            self._schedule_background(
+                self.memory_consolidator.maybe_consolidate_by_tokens(session)
+            )
+            return OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=final_content or "Background task completed.",
+            )
+
+        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+
+        key = session_key or msg.session_key
+        session = self.sessions.get_or_create(key)
+
+        # Slash commands
+        cmd = msg.content.strip().lower()
+        if cmd == "/new":
+            snapshot = session.messages[session.last_consolidated:]
+            session.clear()
+            self.sessions.save(session)
+            self.sessions.invalidate(session.key)
+            if snapshot:
+                self._schedule_background(self.memory_consolidator.archive_messages(snapshot))
+            return OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content="New session started."
+            )
+
+        if cmd == "/help":
+            lines = [
+                "🐈 nanobot commands:",
+                "/new — Start a new conversation",
+                "/stop — Stop the current task",
+                "/restart — Restart the bot",
+                "/help — Show available commands",
+            ]
+            return OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines)
+            )
+
+        # --- Removed: resolve_turn() pre-LLM regex gate ---
+        # SOUL.md constraints are injected via [P1] in the system prompt.
+        # The LLM enforces them with far better semantic precision than regex.
+        # Pre-filtering here added false positives (blocked legitimate requests)
+        # and false negatives (trivial bypass via paraphrase). Deleted entirely.
+
+        if self.memory_auto_directives:
+            directive_reply, directive_meta = (
+                self.context.memory.manager.handle_user_directive_with_meta(msg.content)
+            )
+            logger.debug(
+                "Memory directive parse {}: matched={} action={} reason={}",
+                session.key,
+                directive_meta.get("matched"),
+                directive_meta.get("action"),
+                directive_meta.get("reason"),
+            )
+            if directive_reply is not None:
+                session.add_message("user", msg.content)
+                session.add_message("assistant", directive_reply)
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=directive_reply,
+                    metadata=msg.metadata or {},
+                )
+        else:
+            logger.debug("Memory auto directives disabled for {}", session.key)
+
+        await self.memory_consolidator.maybe_consolidate_by_tokens(session)
+
+        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        if message_tool := self.tools.get("message"):
+            if isinstance(message_tool, MessageTool):
+                message_tool.start_turn()
+
+        history = session.get_history(max_messages=0)
+        initial_messages = self.context.build_messages(
+            history=history,
+            current_message=msg.content,
+            media=msg.media if msg.media else None,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+        )
+
+        async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
+            meta = dict(msg.metadata or {})
+            meta["_progress"] = True
+            meta["_tool_hint"] = tool_hint
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
+            ))
+
+        final_content, _, all_msgs = await self._run_agent_loop(
+            initial_messages, on_progress=on_progress or _bus_progress,
+        )
+
+        if final_content is None:
+            final_content = "I've completed processing but have no response to give."
+
+        self._save_turn(session, all_msgs, 1 + len(history))
+        self.sessions.save(session)
+        self._schedule_background(
+            self.memory_consolidator.maybe_consolidate_by_tokens(session)
+        )
+
+        if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
+            return None
+
+        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
+        logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=final_content,
+            metadata=msg.metadata or {},
+        )
+
+    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
+        """Save new-turn messages into session, truncating large tool results."""
+        from datetime import datetime
+        for m in messages[skip:]:
+            entry = dict(m)
+            role, content = entry.get("role"), entry.get("content")
+            if role == "assistant" and not content and not entry.get("tool_calls"):
+                continue
+            if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
+                entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
+            elif role == "user":
+                if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
+                    parts = content.split("\n\n", 1)
+                    if len(parts) > 1 and parts[1].strip():
+                        entry["content"] = parts[1]
+                    else:
+                        continue
+                if isinstance(content, list):
+                    filtered = []
+                    for c in content:
+                        if (
+                            c.get("type") == "text"
+                            and isinstance(c.get("text"), str)
+                            and c["text"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG)
+                        ):
+                            continue
+                        if (
+                            c.get("type") == "image_url"
+                            and c.get("image_url", {}).get("url", "").startswith("data:image/")
+                        ):
+                            path = (c.get("_meta") or {}).get("path", "")
+                            placeholder = f"[image: {path}]" if path else "[image]"
+                            filtered.append({"type": "text", "text": placeholder})
+                        else:
+                            filtered.append(c)
+                    if not filtered:
+                        continue
+                    entry["content"] = filtered
+            entry.setdefault("timestamp", datetime.now().isoformat())
+            session.messages.append(entry)
+        session.updated_at = datetime.now()
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -354,25 +556,22 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    if self.enable_priority_resolver:
-                        auth = self.context.priority.authorize_tool_call(
+
+                    if auth := self._check_tool_authorization(tool_call.name, tool_call.arguments):
+                        denied_reason = str(auth.get("reason") or "policy_denied")
+                        logger.warning(
+                            "Tool call denied by priority policy: {} ({})",
                             tool_call.name,
-                            tool_call.arguments,
+                            denied_reason,
                         )
-                        if not auth.get("allowed"):
-                            denied_reason = str(auth.get("reason") or "policy_denied")
-                            logger.warning(
-                                "Tool call denied by priority policy: {} ({})",
-                                tool_call.name,
-                                denied_reason,
-                            )
-                            messages = self.context.add_tool_result(
-                                messages,
-                                tool_call.id,
-                                tool_call.name,
-                                f"[policy-blocked] {denied_reason}",
-                            )
-                            continue
+                        messages = self.context.add_tool_result(
+                            messages,
+                            tool_call.id,
+                            tool_call.name,
+                            f"[policy-blocked] {denied_reason}",
+                        )
+                        continue
+
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
@@ -562,26 +761,6 @@ class AgentLoop:
             return OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines),
             )
-
-        if self.enable_priority_resolver:
-            resolution = self.context.priority.resolve_turn(msg.content)
-            logger.debug(
-                "Priority resolve {}: blocked={} trace={}",
-                session.key,
-                resolution.blocked,
-                "|".join(resolution.trace),
-            )
-            if resolution.blocked:
-                blocked_reply = resolution.response or "Sorry, I cannot comply with that request."
-                session.add_message("user", msg.content)
-                session.add_message("assistant", blocked_reply)
-                self.sessions.save(session)
-                return OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content=blocked_reply,
-                    metadata=msg.metadata or {},
-                )
 
         if self.memory_auto_directives:
             directive_reply, directive_meta = self.context.memory.manager.handle_user_directive_with_meta(msg.content)

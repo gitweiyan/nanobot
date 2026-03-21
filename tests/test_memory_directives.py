@@ -34,22 +34,22 @@ def _make_loop(tmp_path: Path, *, memory_auto_directives: bool = True) -> AgentL
 @pytest.mark.asyncio
 async def test_remember_directive_bypasses_llm_and_persists_item(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path)
-    text = "记住 我喜欢简洁技术回答"
+    text = "/记住 我喜欢简洁技术回答"
 
     response = await loop.process_direct(text, session_key="cli:test")
 
     assert "已记住" in response
     loop.provider.chat_with_retry.assert_not_awaited()
-    items = loop.context.memory.manager.store.read_items()
+    items = loop.context.memory.manager.store.list_items()
     assert any("简洁技术回答" in str(i.get("content")) for i in items)
 
 
 @pytest.mark.asyncio
 async def test_show_memory_directive_reads_structured_items(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path)
-    await loop.process_direct("记住 我喜欢中文回复", session_key="cli:test")
+    await loop.process_direct("/记住 我喜欢中文回复", session_key="cli:test")
 
-    response = await loop.process_direct("查看记忆", session_key="cli:test")
+    response = await loop.process_direct("/memory", session_key="cli:test")
 
     assert "当前可用记忆" in response
     assert "我喜欢中文回复" in response
@@ -58,9 +58,9 @@ async def test_show_memory_directive_reads_structured_items(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_forget_directive_deprecates_matched_items(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path)
-    await loop.process_direct("记住 我喜欢简洁回答", session_key="cli:test")
+    await loop.process_direct("/记住 我喜欢简洁回答", session_key="cli:test")
 
-    response = await loop.process_direct("忘记 简洁回答", session_key="cli:test")
+    response = await loop.process_direct("/忘记 简洁回答", session_key="cli:test")
 
     assert "已忘记" in response
     deprecated = loop.context.memory.manager.store.list_items(status="deprecated")
@@ -69,8 +69,8 @@ async def test_forget_directive_deprecates_matched_items(tmp_path: Path) -> None
 
 def test_preference_update_marks_prior_preference_conflicted(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path)
-    first = manager.remember_from_user_text("我喜欢简洁回答")
-    second = manager.remember_from_user_text("我喜欢详细解释")
+    first = manager.remember_from_user_text("我喜欢简洁回答", kind="preference")
+    second = manager.remember_from_user_text("我喜欢详细解释", kind="preference")
 
     assert first and second
     conflicted = manager.store.list_items(scope="user", kind="preference", status="conflicted")
@@ -83,22 +83,24 @@ def test_preference_update_marks_prior_preference_conflicted(tmp_path: Path) -> 
 async def test_memory_directives_can_be_disabled_by_config(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path, memory_auto_directives=False)
 
-    response = await loop.process_direct("记住 我喜欢简洁回答", session_key="cli:test")
+    response = await loop.process_direct("/记住 我喜欢简洁回答", session_key="cli:test")
 
     assert response == "ok"
     loop.provider.chat_with_retry.assert_awaited()
-    assert not loop.context.memory.manager.store.read_items()
+    assert not loop.context.memory.manager.store.list_items()
 
 
 def test_question_like_remember_text_not_intercepted(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path)
+    # Natural language is no longer intercepted by code-level directives.
     assert manager.handle_user_directive("记住了吗？") is None
     assert manager.handle_user_directive("forget this?") is None
 
 
 def test_multiline_input_not_intercepted(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path)
-    assert manager.handle_user_directive("记住 我喜欢A\n另外我喜欢B") is None
+    # Multiline is not a valid slash command.
+    assert manager.handle_user_directive("/记住 我喜欢A\n另外我喜欢B") is None
 
 
 def test_parse_user_directive_returns_structured_reason(tmp_path: Path) -> None:
@@ -111,7 +113,7 @@ def test_parse_user_directive_returns_structured_reason(tmp_path: Path) -> None:
     assert matched["action"] == "remember"
     assert matched["reason"] == "remember_pattern_matched"
     assert rejected["matched"] is False
-    assert rejected["reason"] == "question_like_remember"
+    assert rejected["reason"] == "not_a_slash_command"
 
 
 def test_handle_user_directive_with_meta_exposes_reason(tmp_path: Path) -> None:

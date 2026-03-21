@@ -1,4 +1,18 @@
-"""Memory manager that unifies persistence, consolidation, and retrieval."""
+"""Memory manager that unifies persistence, consolidation, and retrieval.
+
+P0 changes in this file:
+  1. MEMORY.md is no longer a source of truth. It is a generated human-readable
+     view rebuilt from items.jsonl after every consolidation (_rebuild_memory_md).
+     get_relevant_context() always uses search_items(); MEMORY.md is only injected
+     as a token-capped fallback when items.jsonl is empty.
+
+P1 changes:
+  2. get_relevant_context() fallback is token-capped (max_chars parameter) to
+     prevent a large MEMORY.md from flooding the prompt.
+  3. existing_items_summary() is exposed so memory.py (the consolidation layer)
+     can inject current items into the consolidation prompt, guiding the LLM to
+     produce only genuinely new structured_items.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +23,20 @@ from typing import Any
 from nanobot.memory.store import StructuredMemoryStore
 
 
+def _now_iso_short() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()[:10]
+
+
 class MemoryManager:
     """Single entrypoint for memory read/write operations."""
 
     def __init__(self, workspace: Path):
         self.store = StructuredMemoryStore(workspace)
+
+    # ------------------------------------------------------------------
+    # Low-level pass-throughs
+    # ------------------------------------------------------------------
 
     def read_long_term(self) -> str:
         return self.store.read_long_term()
@@ -24,6 +47,65 @@ class MemoryManager:
     def append_history(self, entry: str) -> None:
         self.store.append_history(entry)
 
+    # ------------------------------------------------------------------
+    # P0-1: MEMORY.md is a generated view
+    # ------------------------------------------------------------------
+
+    def _rebuild_memory_md(self) -> None:
+        """Regenerate MEMORY.md from the current active items in items.jsonl.
+
+        Called at the end of every apply_consolidation so the file stays in
+        sync. MEMORY.md is purely for human inspection; the agent always reads
+        from items.jsonl via search_items / get_relevant_context.
+        """
+        active = self.store.list_items(status="active")
+        if not active:
+            self.store.write_long_term(
+                f"# Memory\n\n*Updated: {_now_iso_short()}. No active items.*\n"
+            )
+            return
+
+        by_kind: dict[str, list[str]] = {"preference": [], "decision": [], "fact": []}
+        for item in sorted(active, key=lambda i: i.get("updated_at", ""), reverse=True):
+            kind = item.get("kind", "fact")
+            bucket = by_kind.get(kind, by_kind["fact"])
+            scope = item.get("scope", "project")
+            conf = float(item.get("confidence") or 0)
+            bucket.append(f"- [{scope}] {item.get('content', '')}  (conf={conf:.2f})")
+
+        sections: list[str] = [f"# Memory\n\n*Updated: {_now_iso_short()}*"]
+        labels = [("preference", "Preferences"), ("decision", "Decisions"), ("fact", "Facts")]
+        for key, heading in labels:
+            lines = by_kind.get(key, [])
+            if lines:
+                sections.append(f"## {heading}\n\n" + "\n".join(lines))
+
+        self.store.write_long_term("\n\n".join(sections) + "\n")
+
+    # ------------------------------------------------------------------
+    # P1-1: expose existing items for consolidation prompt injection
+    # ------------------------------------------------------------------
+
+    def existing_items_summary(self, limit: int = 40) -> str:
+        """Return a compact text summary of current active items.
+
+        Injected into the consolidation prompt so the LLM knows what already
+        exists and can avoid emitting duplicate structured_items.
+        """
+        active = self.store.list_items(status="active")
+        if not active:
+            return "(none)"
+        recent = sorted(active, key=lambda i: i.get("updated_at", ""), reverse=True)[:limit]
+        lines = [
+            f"- [{i.get('kind', 'fact')}|{i.get('scope', 'project')}] {i.get('content', '')}"
+            for i in recent
+        ]
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Consolidation persistence
+    # ------------------------------------------------------------------
+
     def ingest_memory_markdown(
         self,
         memory_markdown: str,
@@ -31,6 +113,11 @@ class MemoryManager:
         source_ref: str | None = None,
         scope: str = "project",
     ) -> int:
+        """Fallback: extract items from markdown when LLM omitted structured_items.
+
+        All items default to kind='fact'; LLM-provided structured_items are
+        strictly preferred because they carry accurate kind/scope/confidence.
+        """
         count = 0
         for line in self.store.extract_candidate_lines(memory_markdown):
             item = self.store.upsert_item(
@@ -50,19 +137,27 @@ class MemoryManager:
         history_entry: str,
         memory_update: str,
         source_messages: list[dict[str, Any]] | None = None,
+        structured_items: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Persist consolidation output into both markdown and structured stores."""
-        self.append_history(history_entry)
-        current = self.read_long_term()
-        if memory_update != current:
-            self.write_long_term(memory_update)
+        """Persist consolidation output.
 
-        source_ref = None
+        Write path (P0-1):
+          1. Append to HISTORY.md.
+          2. Write structured items to items.jsonl (primary) or fall back to
+             ingest_memory_markdown() (legacy providers that omit structured_items).
+          3. Rebuild MEMORY.md from items.jsonl so it stays in sync.
+
+        memory_update is still accepted for backward compatibility (providers
+        that don't support the extended tool schema will still send it), but it
+        is no longer written directly to MEMORY.md — the rebuild step handles that.
+        """
+        self.append_history(history_entry)
+
+        source_ref: str = "consolidation"
         if source_messages:
-            first = source_messages[0]
-            ts = str(first.get("timestamp") or "")[:16]
-            source_ref = ts or "consolidation"
-        source_ref = source_ref or "consolidation"
+            ts = str((source_messages[0].get("timestamp") or ""))[:16]
+            if ts:
+                source_ref = ts
 
         self.store.append_event(
             {
@@ -70,12 +165,38 @@ class MemoryManager:
                 "summary": history_entry,
                 "source_ref": source_ref,
                 "message_count": len(source_messages or []),
+                "structured_items_count": len(structured_items) if structured_items else 0,
             }
         )
-        self.ingest_memory_markdown(memory_update, source_ref=source_ref)
+
+        if structured_items:
+            # Primary path: LLM classified items directly — accurate kind/scope/confidence.
+            for raw in structured_items:
+                content = str(raw.get("content") or "").strip()
+                if not content:
+                    continue
+                kind = str(raw.get("kind") or "fact")
+                if kind not in ("fact", "preference", "decision"):
+                    kind = "fact"
+                scope = str(raw.get("scope") or "project")
+                if scope not in ("user", "project"):
+                    scope = "project"
+                confidence = min(1.0, max(0.0, float(raw.get("confidence") or 0.7)))
+                self.store.upsert_item(
+                    scope=scope,
+                    kind=kind,
+                    content=content,
+                    confidence=confidence,
+                    source_ref=source_ref,
+                )
+        else:
+            # Fallback: parse markdown (lossy — all items become kind='fact').
+            self.ingest_memory_markdown(memory_update, source_ref=source_ref)
+
+        # P0-1: always rebuild MEMORY.md from the now-updated items.jsonl.
+        self._rebuild_memory_md()
 
     def record_raw_archive(self, messages: list[dict[str, Any]], summary: str) -> None:
-        """Persist raw-archive fallback for auditability."""
         self.append_history(summary)
         self.store.append_event(
             {
@@ -85,88 +206,101 @@ class MemoryManager:
             }
         )
 
-    def get_relevant_context(self, query: str | None = None, limit: int = 12) -> str:
-        """Build compact memory context for prompt injection."""
+    # ------------------------------------------------------------------
+    # P1-2: token-capped retrieval
+    # ------------------------------------------------------------------
+
+    def get_relevant_context(
+        self,
+        query: str | None = None,
+        limit: int = 12,
+        max_fallback_chars: int = 2_000,
+    ) -> str:
+        """Build compact memory context for prompt injection.
+
+        Always tries items.jsonl first (search_items). Falls back to MEMORY.md
+        only when items.jsonl is empty, and caps the fallback at max_fallback_chars
+        to prevent large files from flooding the prompt.
+        """
         query = (query or "").strip()
         items = self.store.search_items(query, limit=limit)
+
         if not items:
+            # Fallback: MEMORY.md (generated view — may be empty on first run).
             long_term = self.read_long_term()
-            return f"## Long-term Memory\n{long_term}" if long_term else ""
+            if not long_term:
+                return ""
+            truncated = long_term[:max_fallback_chars]
+            suffix = "\n... (truncated — full memory in MEMORY.md)" if len(long_term) > max_fallback_chars else ""
+            return f"## Long-term Memory\n{truncated}{suffix}"
 
         item_ids = [str(i.get("id")) for i in items if i.get("id")]
         self.store.touch_items(item_ids)
 
-        lines = []
-        for item in items:
-            scope = item.get("scope", "project")
-            kind = item.get("kind", "fact")
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            lines.append(f"- ({scope}/{kind}) {content}")
+        lines = [
+            f"- ({i.get('scope', 'project')}/{i.get('kind', 'fact')}) {str(i.get('content') or '').strip()}"
+            for i in items
+            if str(i.get("content") or "").strip()
+        ]
+        return ("## Relevant Memory\n" + "\n".join(lines)) if lines else ""
 
-        if not lines:
-            long_term = self.read_long_term()
-            return f"## Long-term Memory\n{long_term}" if long_term else ""
-        return "## Relevant Memory\n" + "\n".join(lines)
+    # ------------------------------------------------------------------
+    # User-facing memory ops
+    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _infer_kind(text: str) -> str:
-        low = text.lower()
-        if any(k in low for k in ("prefer", "preference", "i like", "i usually")):
-            return "preference"
-        if any(k in text for k in ("偏好", "喜欢", "习惯", "通常")):
-            return "preference"
-        if any(k in low for k in ("decision", "decided", "constraint", "must")):
-            return "decision"
-        return "fact"
-
-    def remember_from_user_text(self, text: str, *, scope: str = "user") -> dict[str, Any] | None:
+    def remember_from_user_text(
+        self,
+        text: str,
+        *,
+        scope: str = "user",
+        kind: str | None = None,
+    ) -> dict[str, Any] | None:
         content = (text or "").strip()
         if not content:
             return None
-        kind = self._infer_kind(content)
+        resolved_kind = kind if kind in ("fact", "preference", "decision") else "fact"
         item = self.store.upsert_item(
             scope=scope,
-            kind=kind,
+            kind=resolved_kind,
             content=content,
             confidence=0.95,
             source_ref="user_directive",
         )
         if not item:
             return None
-
-        # For explicit user preference updates, mark prior active preferences as conflicted.
-        if kind == "preference":
+        if resolved_kind == "preference":
             others = [
                 it for it in self.store.list_items(scope=scope, kind="preference", status="active")
                 if it.get("id") != item.get("id")
             ]
             if others:
-                self.store.update_item_status([str(it.get("id")) for it in others if it.get("id")], "conflicted")
+                self.store.update_item_status(
+                    [str(it["id"]) for it in others if it.get("id")], "conflicted"
+                )
         self.store.append_event(
             {
                 "type": "remember",
                 "scope": scope,
-                "kind": kind,
+                "kind": resolved_kind,
                 "content": content,
                 "memory_id": item.get("id"),
             }
         )
+        # Rebuild the view so MEMORY.md reflects the user's explicit addition.
+        self._rebuild_memory_md()
         return item
 
     def forget_by_query(self, query: str, *, scope: str = "user") -> int:
-        matches = self.store.find_items_for_query(query, statuses=("active", "conflicted"), scope=scope, limit=50)
-        ids = [str(i.get("id")) for i in matches if i.get("id")]
+        matches = self.store.find_items_for_query(
+            query, statuses=("active", "conflicted"), scope=scope, limit=50
+        )
+        ids = [str(i["id"]) for i in matches if i.get("id")]
         count = self.store.update_item_status(ids, "deprecated")
         self.store.append_event(
-            {
-                "type": "forget",
-                "scope": scope,
-                "query": query,
-                "matched": count,
-            }
+            {"type": "forget", "scope": scope, "query": query, "matched": count}
         )
+        if count:
+            self._rebuild_memory_md()
         return count
 
     def render_memory_snapshot(self, *, limit: int = 20) -> str:
@@ -174,121 +308,68 @@ class MemoryManager:
         if not active:
             return "我目前没有可用的结构化记忆。"
         ranked = sorted(active, key=lambda i: i.get("updated_at", ""), reverse=True)[: max(1, limit)]
-        lines = ["当前可用记忆："]
-        for item in ranked:
-            scope = item.get("scope", "project")
-            kind = item.get("kind", "fact")
-            lines.append(f"- ({scope}/{kind}) {item.get('content', '')}")
+        lines = ["当前可用记忆："] + [
+            f"- ({i.get('scope', 'project')}/{i.get('kind', 'fact')}) {i.get('content', '')}"
+            for i in ranked
+        ]
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Directive parsing — slash commands only
+    # (NL patterns removed: LLM handles "please remember X" naturally)
+    # ------------------------------------------------------------------
 
     _REMEMBER_PATTERNS = (
         re.compile(r"^\s*/remember\s+(.+)$", re.IGNORECASE),
-        re.compile(r"^\s*remember(?:\s+that)?\s+(.+)$", re.IGNORECASE),
         re.compile(r"^\s*/记住\s+(.+)$"),
-        re.compile(r"^\s*(?:请)?(?:帮我)?记住[:：]?\s*(.+)$"),
     )
     _FORGET_PATTERNS = (
         re.compile(r"^\s*/forget\s+(.+)$", re.IGNORECASE),
-        re.compile(r"^\s*(?:forget|remove memory|delete memory)\s+(.+)$", re.IGNORECASE),
         re.compile(r"^\s*/忘记\s+(.+)$"),
-        re.compile(r"^\s*(?:请)?(?:帮我)?忘记[:：]?\s*(.+)$"),
     )
     _SHOW_PATTERNS = (
         re.compile(r"^\s*/memory(?:\s+show)?\s*$", re.IGNORECASE),
-        re.compile(r"^\s*(?:show|list)\s+(?:memory|memories)\s*$", re.IGNORECASE),
-        re.compile(r"^\s*what do you remember\s*$", re.IGNORECASE),
-        re.compile(r"^\s*(?:查看|显示|列出)?(?:我的)?记忆\s*$"),
-        re.compile(r"^\s*你记得什么\s*\??\s*$"),
     )
-
     _MAX_DIRECTIVE_CHARS = 220
-
-    @staticmethod
-    def _looks_like_question(text: str) -> bool:
-        raw = (text or "").strip()
-        if not raw:
-            return False
-        if raw.endswith("?") or raw.endswith("？"):
-            return True
-        return bool(re.search(r"(吗|么|呢)\s*[?？]?\s*$", raw))
 
     def _eligible_directive_text(self, text: str) -> str | None:
         raw = (text or "").strip()
-        if not raw:
+        if not raw or not raw.startswith("/"):
             return None
-        if len(raw) > self._MAX_DIRECTIVE_CHARS:
-            return None
-        if "\n" in raw or "\r" in raw:
-            return None
-        if "```" in raw:
+        if len(raw) > self._MAX_DIRECTIVE_CHARS or "\n" in raw or "\r" in raw:
             return None
         return raw
 
     def parse_user_directive(self, text: str) -> dict[str, Any]:
-        """Parse potential memory directive with explicit reason for audit/debug."""
         raw = self._eligible_directive_text(text)
         if raw is None:
-            value = (text or "").strip()
-            if not value:
-                return {"matched": False, "reason": "empty_input"}
-            if len(value) > self._MAX_DIRECTIVE_CHARS:
-                return {"matched": False, "reason": "too_long"}
-            if "\n" in value or "\r" in value:
-                return {"matched": False, "reason": "multiline"}
-            if "```" in value:
-                return {"matched": False, "reason": "contains_code_block"}
-            return {"matched": False, "reason": "ineligible_text"}
+            return {"matched": False, "reason": "not_a_slash_command"}
 
         for pat in self._SHOW_PATTERNS:
             if pat.match(raw):
-                return {
-                    "matched": True,
-                    "action": "show",
-                    "payload": {},
-                    "reason": "show_pattern_matched",
-                    "raw": raw,
-                }
+                return {"matched": True, "action": "show", "payload": {}, "reason": "show_pattern_matched", "raw": raw}
 
         for pat in self._REMEMBER_PATTERNS:
             m = pat.match(raw)
-            if not m:
-                continue
-            if self._looks_like_question(raw):
-                return {"matched": False, "reason": "question_like_remember", "raw": raw}
-            content = (m.group(1) or "").strip()
-            if len(content) < 2:
-                return {"matched": False, "reason": "remember_content_too_short", "raw": raw}
-            return {
-                "matched": True,
-                "action": "remember",
-                "payload": {"content": content},
-                "reason": "remember_pattern_matched",
-                "raw": raw,
-            }
+            if m:
+                content = (m.group(1) or "").strip()
+                if len(content) < 2:
+                    return {"matched": False, "reason": "remember_content_too_short", "raw": raw}
+                return {"matched": True, "action": "remember", "payload": {"content": content}, "reason": "remember_pattern_matched", "raw": raw}
 
         for pat in self._FORGET_PATTERNS:
             m = pat.match(raw)
-            if not m:
-                continue
-            if self._looks_like_question(raw):
-                return {"matched": False, "reason": "question_like_forget", "raw": raw}
-            query = (m.group(1) or "").strip()
-            if not query:
-                return {"matched": False, "reason": "forget_query_empty", "raw": raw}
-            return {
-                "matched": True,
-                "action": "forget",
-                "payload": {"query": query},
-                "reason": "forget_pattern_matched",
-                "raw": raw,
-            }
+            if m:
+                query = (m.group(1) or "").strip()
+                if not query:
+                    return {"matched": False, "reason": "forget_query_empty", "raw": raw}
+                return {"matched": True, "action": "forget", "payload": {"query": query}, "reason": "forget_pattern_matched", "raw": raw}
 
         return {"matched": False, "reason": "no_pattern_match", "raw": raw}
 
     def apply_user_directive(self, decision: dict[str, Any]) -> str:
-        """Execute a parsed directive decision."""
-        action = str(decision.get("action") or "")
-        reason = str(decision.get("reason") or "")
+        action  = str(decision.get("action") or "")
+        reason  = str(decision.get("reason") or "")
         payload = decision.get("payload") or {}
 
         if action == "show":
@@ -301,12 +382,7 @@ class MemoryManager:
             if not item:
                 return "未识别到可保存的记忆内容。"
             self.store.append_event(
-                {
-                    "type": "memory_directive_applied",
-                    "action": "remember",
-                    "parser_reason": reason,
-                    "memory_id": item.get("id"),
-                }
+                {"type": "memory_directive_applied", "action": "remember", "parser_reason": reason, "memory_id": item.get("id")}
             )
             return f"已记住：{item.get('content')}"
 
@@ -316,28 +392,18 @@ class MemoryManager:
                 return "请告诉我你想忘记什么。"
             count = self.forget_by_query(query)
             self.store.append_event(
-                {
-                    "type": "memory_directive_applied",
-                    "action": "forget",
-                    "parser_reason": reason,
-                    "query": query,
-                    "matched": count,
-                }
+                {"type": "memory_directive_applied", "action": "forget", "parser_reason": reason, "query": query, "matched": count}
             )
-            if count <= 0:
-                return "没有找到可删除的匹配记忆。"
-            return f"已忘记 {count} 条匹配记忆。"
+            return "没有找到可删除的匹配记忆。" if count <= 0 else f"已忘记 {count} 条匹配记忆。"
 
         return "未识别到可执行的记忆指令。"
 
     def handle_user_directive_with_meta(self, text: str) -> tuple[str | None, dict[str, Any]]:
-        """Return (reply, parse_decision) for caller-side auditing/logging."""
         decision = self.parse_user_directive(text)
         if not decision.get("matched"):
             return None, decision
         return self.apply_user_directive(decision), decision
 
     def handle_user_directive(self, text: str) -> str | None:
-        """Backward-compatible helper: parse + apply when matched."""
-        reply, _decision = self.handle_user_directive_with_meta(text)
+        reply, _ = self.handle_user_directive_with_meta(text)
         return reply

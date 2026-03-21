@@ -103,8 +103,12 @@ class TestMemoryConsolidationTypeHandling:
         assert parsed["summary"] == "User discussed testing."
 
         memory_content = store.memory_file.read_text()
-        parsed_mem = json.loads(memory_content)
-        assert "User likes testing" in parsed_mem["facts"]
+        assert '{"facts": ["User likes testing"], "topics": ["testing"]}' in memory_content
+        assert "(conf=0.60)" in memory_content
+
+        # Verify it's in the structured items as well
+        items = store.manager.store.list_items(kind="fact")
+        assert any("User likes testing" in str(i.get("content")) for i in items)
 
     @pytest.mark.asyncio
     async def test_string_arguments_as_raw_json(self, tmp_path: Path) -> None:
