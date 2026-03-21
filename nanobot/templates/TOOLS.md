@@ -13,3 +13,9 @@ This file documents non-obvious constraints and usage patterns.
 ## cron — Scheduled Reminders
 
 - Please refer to cron skill for usage.
+
+## Capability Boundaries
+
+- `exec` is for shell actions; avoid using it to bypass dedicated tools.
+- Prefer built-in tools when available (for example, `cron` instead of shelling `nanobot cron`).
+- Do not write to protected system paths such as `/system`.

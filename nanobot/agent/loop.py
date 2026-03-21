@@ -66,6 +66,9 @@ class AgentLoop:
         channels_config: ChannelsConfig | None = None,
         workspace_manager: WorkspaceManager | None = None,
         memory_auto_directives: bool = True,
+        enable_priority_resolver: bool = True,
+        enforce_tool_and_role_intersection: bool = True,
+        memory_trust_threshold: float = 0.85,
     ):
         from nanobot.config.schema import ExecToolConfig, WebSearchConfig
         from nanobot.workspace.manager import WorkspaceManager
@@ -96,9 +99,16 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self.memory_auto_directives = memory_auto_directives
+        self.enable_priority_resolver = enable_priority_resolver
+        self.enforce_tool_and_role_intersection = enforce_tool_and_role_intersection
+        self.memory_trust_threshold = memory_trust_threshold
 
         # Initialize components
         self.context = ContextBuilder(self.workspace)
+        self.context.priority.configure(
+            memory_trust_threshold=memory_trust_threshold,
+            enforce_tool_and_role_intersection=enforce_tool_and_role_intersection,
+        )
         self.sessions = session_manager or SessionManager(self.workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -151,6 +161,10 @@ class AgentLoop:
 
         # Reinitialize all workspace-dependent components
         self.context = ContextBuilder(new_workspace)
+        self.context.priority.configure(
+            memory_trust_threshold=self.memory_trust_threshold,
+            enforce_tool_and_role_intersection=self.enforce_tool_and_role_intersection,
+        )
         self.sessions = SessionManager(new_workspace)
         self.subagents = SubagentManager(
             provider=self.provider,
@@ -340,6 +354,25 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                    if self.enable_priority_resolver:
+                        auth = self.context.priority.authorize_tool_call(
+                            tool_call.name,
+                            tool_call.arguments,
+                        )
+                        if not auth.get("allowed"):
+                            denied_reason = str(auth.get("reason") or "policy_denied")
+                            logger.warning(
+                                "Tool call denied by priority policy: {} ({})",
+                                tool_call.name,
+                                denied_reason,
+                            )
+                            messages = self.context.add_tool_result(
+                                messages,
+                                tool_call.id,
+                                tool_call.name,
+                                f"[policy-blocked] {denied_reason}",
+                            )
+                            continue
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
@@ -529,6 +562,26 @@ class AgentLoop:
             return OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines),
             )
+
+        if self.enable_priority_resolver:
+            resolution = self.context.priority.resolve_turn(msg.content)
+            logger.debug(
+                "Priority resolve {}: blocked={} trace={}",
+                session.key,
+                resolution.blocked,
+                "|".join(resolution.trace),
+            )
+            if resolution.blocked:
+                blocked_reply = resolution.response or "Sorry, I cannot comply with that request."
+                session.add_message("user", msg.content)
+                session.add_message("assistant", blocked_reply)
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=blocked_reply,
+                    metadata=msg.metadata or {},
+                )
 
         if self.memory_auto_directives:
             directive_reply, directive_meta = self.context.memory.manager.handle_user_directive_with_meta(msg.content)

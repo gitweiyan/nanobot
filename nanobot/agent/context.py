@@ -9,6 +9,7 @@ from typing import Any
 from nanobot.utils.helpers import current_time_str
 
 from nanobot.agent.memory import MemoryStore
+from nanobot.agent.resolution import PriorityResolver
 from nanobot.agent.skills import SkillsLoader
 from nanobot.utils.helpers import build_assistant_message, detect_image_mime
 
@@ -22,6 +23,7 @@ class ContextBuilder:
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
+        self.priority = PriorityResolver(workspace, self.memory.manager)
         self.skills = SkillsLoader(workspace)
 
     @staticmethod
@@ -41,16 +43,12 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         memory_query: str | None = None,
     ) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills."""
+        """Build the system prompt from identity, priority layers, and skills."""
         parts = [self._get_identity()]
 
-        bootstrap = self._load_bootstrap_files()
-        if bootstrap:
-            parts.append(bootstrap)
-
-        memory = self.memory.get_memory_context(memory_query)
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
+        parts.extend(self.priority.build_priority_blocks(
+            memory_query=memory_query,
+        ))
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -155,7 +153,13 @@ Your workspace is at: {workspace_path}
 
         memory_query = self._extract_query_text(current_message)
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names, memory_query=memory_query)},
+            {
+                "role": "system",
+                "content": self.build_system_prompt(
+                    skill_names,
+                    memory_query=memory_query,
+                ),
+            },
             *history,
             {"role": current_role, "content": merged},
         ]

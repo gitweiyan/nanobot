@@ -555,6 +555,9 @@ def gateway(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         memory_auto_directives=config.agents.defaults.memory_auto_directives,
+        enable_priority_resolver=config.agents.defaults.enable_priority_resolver,
+        enforce_tool_and_role_intersection=config.agents.defaults.enforce_tool_and_role_intersection,
+        memory_trust_threshold=config.agents.defaults.memory_trust_threshold,
     )
 
     # Set cron callback (needs agent)
@@ -749,6 +752,9 @@ def agent(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         memory_auto_directives=config.agents.defaults.memory_auto_directives,
+        enable_priority_resolver=config.agents.defaults.enable_priority_resolver,
+        enforce_tool_and_role_intersection=config.agents.defaults.enforce_tool_and_role_intersection,
+        memory_trust_threshold=config.agents.defaults.memory_trust_threshold,
     )
 
     # Shared reference for progress callbacks

@@ -163,7 +163,7 @@ def test_global_instance_option_applies_to_status(tmp_path):
 
     assert result.exit_code == 0
     stripped_output = _strip_ansi(result.stdout)
-    assert str(instance_dir / "config.json") in stripped_output
+    assert str(instance_dir / "config.json") in stripped_output.replace("\n", "")
     commands_module._CLI_INSTANCE_OVERRIDE = None
     InstanceManager.get().cleanup()
 
